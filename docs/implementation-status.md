@@ -563,3 +563,21 @@ measured in [`docs/evaluation.md`](evaluation.md) ("Improvement").
 - Known misses: a wrong claim reusing the excerpt's words ("SEV2 postmortems are reviewed by the CTO [S1]"),
   a number cited for the wrong entity (SEV1's 15 minutes for SEV2), and facts under `### Next step`. Known false
   positives: unit or word paraphrases ("60 minutes" vs "1 hour") and numbers past the 300-character excerpt.
+
+## Portfolio polish (lead, 2026-10-26)
+
+- **Demo recording:** `docs/screenshots/demo.gif` (44 s, 1.9 MB). Chromium was driven by Playwright against the real
+  stack on the live `openai/gpt-oss-120b`, with a fresh `agentops_demo` database and tracker. Frames come from the
+  DevTools screencast with their real timestamps and were assembled with ffmpeg; nothing was sped up or edited.
+  Playwright's own video recorder did not write a file with the locally available ffmpeg build, which is why this
+  path was used.
+- **Proposal grounding check** (ADR 0008) and **retrieval ranking fixes** (ADR 0007). See their sections above and
+  `docs/evaluation.md`.
+- **Live eval:** the first capped run failed 4/5 because the model wrote `【S1】`-style markers. `normalize_markers`
+  now canonicalises marker variants in chat, report verification and proposal grounding (unit tests plus eval case
+  `cit-lenticular-markers`). The re-run passed 5/5; it is archived in `backend/evals/reports/live-2026-10-26.md`.
+- **Observed in the recording (open):** the drafted issue cited the deprecated v1 runbook's response times with a
+  valid marker. The grounding check passes faithful citations of deprecated sources. Proposed next fix: carry the
+  `deprecated` flag into evidence (prompt attribute plus a `cites_deprecated` grounding flag).
+- Final checks: backend `make check` 447 passed / 1 skipped, integration 40 passed, eval 45 pass / 2 xfail,
+  frontend 198 passed, build OK.

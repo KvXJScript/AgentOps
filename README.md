@@ -7,9 +7,25 @@ A full-stack AI portfolio project: retrieval-augmented generation with citations
 LangGraph workflow, and an MCP tool integration behind a human approval step. It runs entirely on free model tiers
 and local embeddings.
 
-> **No hosted demo.** The screenshots below are the main way to review the UI. They were captured in a real browser
-> from the running app (FastAPI, Postgres/pgvector, local embeddings, the MCP subprocess and the live
-> `openai/gpt-oss-120b` model on Groq), using synthetic documents.
+> **No hosted demo.** The recording and screenshots below are the main way to review the UI. They were captured in
+> a real browser from the running app (FastAPI, Postgres/pgvector, local embeddings, the MCP subprocess and the live
+> `openai/gpt-oss-120b` model on Groq), using synthetic documents. Nothing in them is mocked.
+
+<p align="center">
+  <img src="docs/screenshots/demo.gif" alt="44-second recording: upload documents, ask with citations, run a LangGraph report, propose a follow-up issue, review the grounding check and approve it" width="100%">
+  <br><em>Real-time recording (44 s): upload → cited answer → report workflow → proposal with grounding check → approval → tracker.</em>
+</p>
+
+### Review in 5 minutes
+
+1. **Watch the recording above.** The whole flow runs on the live model.
+2. **Citations you can trust:** [ADR 0003](docs/adr/0003-server-side-citation-resolution.md) explains why the model
+   never decides which source a citation points to.
+3. **No side effect without a human:** [ADR 0005](docs/adr/0005-approval-bound-to-payload-hash-and-writer-isolation.md)
+   covers why only the approval endpoint can write.
+4. **Measured, not guessed:** the [eval suite](docs/evaluation.md) has per-case results, a rejected hybrid-search
+   experiment and an [archived live run](backend/evals/reports/live-2026-10-26.md).
+5. **Honest limits:** [Known limitations](#known-limitations) below, and [`docs/security.md`](docs/security.md).
 
 <p align="center">
   <img src="docs/screenshots/rag-answer-with-citations.png" alt="Chat answer grounded in uploaded documents, with numbered citation chips and a sources row" width="100%">
@@ -20,8 +36,8 @@ and local embeddings.
 |---|---|
 | ![Retrieval inspector showing ranked chunks with similarity scores, cited vs not cited, including an ignored prompt-injection chunk](docs/screenshots/retrieval-inspector.png) | ![Report page with the five-stage LangGraph timeline and a cited report](docs/screenshots/report-workflow.png) |
 | *Retrieval inspector: rank, cosine score, cited or not. Chunk #6 holds a prompt-injection payload; it was retrieved but ignored and never cited.* | *Report workflow: validate → retrieve → analyze → draft → verify, with per-stage timing and verified references.* |
-| ![Approval review screen listing the exact tool, target, arguments and payload hash](docs/screenshots/approval-review.png) | ![Confirmation dialog restating the action and the payload hash being approved](docs/screenshots/approval-confirm.png) |
-| *Approval review: the model drafted a `create_issue` call. Tool and target are fixed by the server; nothing has run.* | *Approval is bound to the payload hash on screen. It runs once.* |
+| ![Approval review screen listing the exact tool, target, arguments and payload hash](docs/screenshots/approval-review.png) | ![Grounding check panel: 4 claims checked, 2 supported, 2 flagged as weak matches with their cited sources](docs/screenshots/approval-grounding-check.png) |
+| *Approval review: the model drafted a `create_issue` call. Tool and target are fixed by the server; nothing has run.* | *Grounding check on the drafted issue: claims whose citation doesn't back them are flagged for the reviewer.* |
 
 ![Tracker page showing the local demo MCP server, its allowlisted tools and issues rendered as untrusted plain text](docs/screenshots/tracker-mcp.png)
 *The local demo MCP server (clearly labelled), its three allowlisted tools, and issues shown as untrusted tool output.
@@ -204,12 +220,19 @@ cd frontend
 npm run lint && npm run typecheck && npm test && npm run build
 ```
 
-Last local run (2026-10-26): **372 backend unit tests passed** (1 opt-in test skipped), **34 integration tests
-passed**, **190 frontend tests passed**, production build OK. The eval suite has 39 cases covering retrieval,
-citations, abstention, prompt injection, workflow and tool/approval policy: **35 pass, 4 xfail**. The xfails are
-documented retrieval weaknesses, such as a paraphrase ranking the right chunk 3rd instead of 2nd. Results are reported per
-case; there is no single "accuracy" score. All automated tests use fake or scripted models. Only the screenshots and
-one smoke call used the live provider.
+Last local run (2026-10-26): **447 backend unit tests passed** (1 opt-in test skipped), **40 integration tests
+passed**, **198 frontend tests passed**, production build OK.
+
+The eval suite (v1.3.0, 47 cases) covers retrieval, citations, abstention, prompt injection, the report workflow,
+tool/approval policy and proposal grounding. Result: **45 pass, 2 xfail**. The xfails are documented retrieval
+weaknesses, such as a paraphrase ranking the right chunk 3rd instead of 2nd. Results are reported per case; there
+is no single "accuracy" score. CI runs the suite with scripted models.
+
+**Live model run.** `python -m evals --live` runs at most 5 calls against the configured provider, manually and never
+in CI. The first run failed 4 of 5 cases: `gpt-oss-120b` sometimes writes citations as `【S1】`, not `[S1]`, so
+correct answers were stored as "insufficient evidence". Marker variants are now normalised and guarded by a
+regression case. The re-run passed 5/5, including PL↔EN citations and the injection case; it is
+[archived here](backend/evals/reports/live-2026-10-26.md).
 
 ## Security
 
@@ -230,7 +253,7 @@ Full review: [`docs/security.md`](docs/security.md). Highlights:
 
 | Component | Status |
 |---|---|
-| LLM (Groq) | **Real.** Used for the screenshots and a smoke test. Automated tests use fakes. |
+| LLM (Groq) | **Real.** Used for the recording, screenshots, a smoke test and the capped live eval. Automated tests and CI use fakes. |
 | Embeddings, Postgres/pgvector | **Real**, locally. |
 | MCP server `local-tracker` | **Real MCP over stdio, but a local demo server** shipped in this repo, not an external service. Issues live in a local JSON file. |
 | Gemini adapter | Implemented and covered by mocked tests. Not exercised against the live API. |
@@ -246,6 +269,10 @@ Full review: [`docs/security.md`](docs/security.md). Highlights:
   ([ADR 0008](docs/adr/0008-deterministic-grounding-check-for-proposals.md)). The check still misses a wrong claim
   that reuses the excerpt's words or a number cited for the wrong entity, and it can flag a fair paraphrase.
   It only flags. The human decides.
+- **A faithful citation to a deprecated source passes the grounding check.** In the recording, the drafted issue
+  quoted the deprecated v1 runbook's "30 minutes / four hours" with a valid `[S5]`. The claim matches its source,
+  but that source is outdated (v3 says 15 minutes / one hour). The check doesn't yet use the document's
+  `deprecated` flag. Flagging claims that cite deprecated documents is the next fix.
 - **Known retrieval weaknesses** (see the eval xfails): a paraphrase can rank the right chunk 3rd instead of 2nd,
   and an adjacent off-topic question ("parental leave in Germany", 0.411) clears `RETRIEVAL_MIN_SCORE`, so the
   model is called and has to decline. Stale versions are demoted only if their front matter says
