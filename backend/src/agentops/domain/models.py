@@ -5,6 +5,8 @@ from datetime import datetime
 from enum import StrEnum
 from uuid import UUID
 
+from agentops.domain.retrieval import Citation
+
 DEFAULT_CONVERSATION_TITLE = "New conversation"
 
 
@@ -17,6 +19,12 @@ class MessageStatus(StrEnum):
     COMPLETE = "complete"
     INCOMPLETE = "incomplete"
     FAILED = "failed"
+
+
+class Grounding(StrEnum):
+    NONE = "none"  # plain chat
+    GROUNDED = "grounded"  # at least one valid citation
+    INSUFFICIENT_EVIDENCE = "insufficient_evidence"
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,6 +47,8 @@ class Message:
     model: str | None = None
     input_tokens: int | None = None
     output_tokens: int | None = None
+    grounding: Grounding = Grounding.NONE
+    citations: tuple[Citation, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

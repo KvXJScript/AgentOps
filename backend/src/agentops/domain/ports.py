@@ -5,6 +5,7 @@ from typing import Protocol
 from uuid import UUID
 
 from agentops.domain.models import ChatChunk, ChatTurn, Conversation, Message
+from agentops.domain.retrieval import RetrievalTrace
 
 
 class ChatModel(Protocol):
@@ -39,9 +40,14 @@ class ConversationRepository(Protocol):
         """Last `limit` messages with status complete, oldest first."""
         ...
 
-    async def add_message(self, message: Message, *, new_title: str | None = None) -> None:
-        """Insert a message, bump the conversation's `updated_at` (and optionally its title).
+    async def add_message(
+        self, message: Message, *, new_title: str | None = None, retrieval: RetrievalTrace | None = None
+    ) -> None:
+        """Insert a message (with its retrieval trace, if any), bump the conversation's `updated_at`
+        (and optionally its title).
 
         Raises `ConversationNotFound` if the conversation no longer exists.
         """
         ...
+
+    async def get_retrieval(self, message_id: UUID) -> RetrievalTrace | None: ...

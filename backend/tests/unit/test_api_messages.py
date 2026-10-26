@@ -47,6 +47,8 @@ async def test_success_stream_event_order_and_shape(harness: Harness, chat_model
         "error_code": None,
         "model": "scripted-1",
         "created_at": done["message"]["created_at"],
+        "grounding": "none",
+        "citations": [],
     }
 
 

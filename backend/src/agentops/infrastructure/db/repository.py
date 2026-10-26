@@ -6,7 +6,16 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from agentops.domain.errors import ConversationNotFound
-from agentops.domain.models import Conversation, Message, MessageStatus, Role
+from agentops.domain.models import Conversation, Grounding, Message, MessageStatus, Role
+from agentops.domain.retrieval import RetrievalTrace
+from agentops.infrastructure.db.documents import (
+    MessageRetrievalRow,
+    citation_from_json,
+    citation_to_json,
+    existing_chunk_ids,
+    trace_from_row,
+    trace_to_row,
+)
 from agentops.infrastructure.db.models import ConversationRow, MessageRow
 
 
@@ -47,7 +56,10 @@ class SqlConversationRepository:
             .order_by(MessageRow.created_at, MessageRow.id)
         )
         async with self._sessions() as session:
-            return [_message(row) for row in await session.scalars(stmt)]
+            rows = list(await session.scalars(stmt))
+            cited = {UUID(c["chunk_id"]) for row in rows for c in row.citations}
+            alive = await existing_chunk_ids(session, cited)
+        return [_message(row, alive_chunk_ids=alive) for row in rows]
 
     async def recent_complete_messages(self, conversation_id: UUID, limit: int) -> list[Message]:
         stmt = (
@@ -60,7 +72,9 @@ class SqlConversationRepository:
             rows = list(await session.scalars(stmt))
         return [_message(row) for row in reversed(rows)]
 
-    async def add_message(self, message: Message, *, new_title: str | None = None) -> None:
+    async def add_message(
+        self, message: Message, *, new_title: str | None = None, retrieval: RetrievalTrace | None = None
+    ) -> None:
         values: dict[str, object] = {"updated_at": message.created_at}
         if new_title is not None:
             values["title"] = new_title
@@ -83,15 +97,26 @@ class SqlConversationRepository:
                     input_tokens=message.input_tokens,
                     output_tokens=message.output_tokens,
                     created_at=message.created_at,
+                    grounding=message.grounding.value,
+                    citations=[citation_to_json(c) for c in message.citations],
                 )
             )
+            if retrieval is not None:
+                await session.flush()
+                session.add(trace_to_row(message.id, retrieval))
+
+    async def get_retrieval(self, message_id: UUID) -> RetrievalTrace | None:
+        async with self._sessions() as session:
+            row = await session.get(MessageRetrievalRow, message_id)
+            return trace_from_row(row) if row else None
 
 
 def _conversation(row: ConversationRow) -> Conversation:
     return Conversation(id=row.id, title=row.title, created_at=row.created_at, updated_at=row.updated_at)
 
 
-def _message(row: MessageRow) -> Message:
+def _message(row: MessageRow, *, alive_chunk_ids: set[UUID] | None = None) -> Message:
+    """`alive_chunk_ids=None` skips the deleted-source check (history sent to the model)."""
     return Message(
         id=row.id,
         conversation_id=row.conversation_id,
@@ -103,4 +128,11 @@ def _message(row: MessageRow) -> Message:
         input_tokens=row.input_tokens,
         output_tokens=row.output_tokens,
         created_at=row.created_at,
+        grounding=Grounding(row.grounding),
+        citations=tuple(
+            citation_from_json(
+                c, document_deleted=alive_chunk_ids is not None and UUID(c["chunk_id"]) not in alive_chunk_ids
+            )
+            for c in row.citations
+        ),
     )

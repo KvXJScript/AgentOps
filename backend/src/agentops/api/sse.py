@@ -7,8 +7,15 @@ from typing import Any
 import anyio
 
 from agentops.api.errors import INTERNAL_ERROR_MESSAGE
-from agentops.api.schemas import MessageOut, UsageOut
-from agentops.application.chat_service import CompletedEvent, FailedEvent, ReplyStream, TokenEvent
+from agentops.api.schemas import MessageOut, RetrievedChunkOut, UsageOut
+from agentops.application.chat_service import (
+    CompletedEvent,
+    FailedEvent,
+    InternalFailure,
+    ReplyStream,
+    RetrievalEvent,
+    TokenEvent,
+)
 from agentops.domain.errors import LLMError, LLMRateLimited
 
 SSE_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"}
@@ -30,6 +37,14 @@ async def reply_events(reply: ReplyStream, request_id: str) -> AsyncIterator[str
     try:
         async for event in reply.events:
             match event:
+                case RetrievalEvent(chunks=chunks, sufficient=sufficient):
+                    yield format_event(
+                        "retrieval",
+                        {
+                            "chunks": [RetrievedChunkOut.of(c).model_dump(mode="json") for c in chunks],
+                            "sufficient": sufficient,
+                        },
+                    )
                 case TokenEvent(delta=delta):
                     yield format_event("token", {"delta": delta})
                 case CompletedEvent(message=message, usage=usage):
@@ -43,7 +58,8 @@ async def reply_events(reply: ReplyStream, request_id: str) -> AsyncIterator[str
                 case FailedEvent(error=error, message_id=message_id):
                     data: dict[str, Any] = {
                         "code": error.code,
-                        "message": error.message if isinstance(error, LLMError) else INTERNAL_ERROR_MESSAGE,
+                        # Domain error messages are written to be user-safe; unexpected ones are not.
+                        "message": INTERNAL_ERROR_MESSAGE if isinstance(error, InternalFailure) else error.message,
                         "retryable": isinstance(error, LLMError) and error.retryable,
                         "request_id": request_id,
                         "message_id": str(message_id),

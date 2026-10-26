@@ -5,17 +5,23 @@ without a key. A message starting with `!fake:<scenario>` triggers a failure,
 which makes every error path reachable from the browser:
 
     !fake:auth  !fake:rate_limited  !fake:timeout  !fake:unavailable  !fake:midstream
+
+When the system prompt carries `<evidence label="Sn">` blocks (chat with documents),
+the echo ends with a citation of the first label, so grounded replies are demoable.
 """
 
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import AsyncIterator, Sequence
 
 from agentops.domain.errors import LLMAuthFailed, LLMError, LLMRateLimited, LLMTimeout, LLMUnavailable
 from agentops.domain.models import ChatChunk, ChatTurn, Role, StreamEnd, TextDelta, Usage
 
 FAKE_MODEL = "fake-echo"
+
+_EVIDENCE_LABEL = re.compile(r'<evidence label="(S\d+)"')
 
 _SCENARIOS: dict[str, type[LLMError]] = {
     "auth": LLMAuthFailed,
@@ -38,7 +44,10 @@ class FakeEchoChatModel:
         if scenario in _SCENARIOS:
             raise _SCENARIOS[scenario]()
 
-        words = f"[fake-echo] You said: {last}".split(" ")
+        reply = f"[fake-echo] You said: {last}"
+        if label := _EVIDENCE_LABEL.search(system_prompt):
+            reply += f" (see [{label.group(1)}])"
+        words = reply.split(" ")
         for index, word in enumerate(words):
             if scenario == "midstream" and index == 2:
                 raise LLMUnavailable()

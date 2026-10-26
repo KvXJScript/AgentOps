@@ -25,6 +25,10 @@ dependencies = [
 requires = ["uv_build>=0.12.20,<0.13.0"]
 build-backend = "uv_build"
 
+[tool.uv.build-backend]
+# The local demo MCP server ships as its own top-level package next to the app.
+module-name = ["agentops", "local_tracker_mcp"]
+
 [dependency-groups]
 dev = [
     "httpx>=0.28.1",
@@ -50,7 +54,7 @@ ignore = ["PLR0911", "PLR0913", "PLR2004", "S101", "RUF001"]
 [tool.mypy]
 python_version = "3.12"
 strict = true
-packages = ["agentops"]
+packages = ["agentops", "local_tracker_mcp"]
 mypy_path = "src"
 warn_unreachable = true
 plugins = ["pydantic.mypy"]

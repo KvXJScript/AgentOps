@@ -53,14 +53,22 @@ def format_evidence(evidence: Sequence[LabelledEvidence], *, max_chars: int) -> 
     included: list[LabelledEvidence] = []
     used = 0
     for item in evidence:
-        body = _DELIMITER.sub("[removed tag]", item.chunk.text)
-        block = f'<evidence label="{item.label}" source="{_attr(item.chunk.document_title)}">\n{body}\n</evidence>'
+        block = format_untrusted_block(item.label, item.chunk.document_title, item.chunk.text)
         if blocks and used + len(block) > max_chars:
             break
         blocks.append(block)
         included.append(item)
         used += len(block)
     return "\n\n".join(blocks), included
+
+
+def format_untrusted_block(label: str, source: str, text: str) -> str:
+    """One untrusted-data block in the `<evidence>` format, with delimiter look-alikes neutralised.
+
+    Also used for non-document data (e.g. tracker issues) so every untrusted input looks the same.
+    """
+    body = _DELIMITER.sub("[removed tag]", text)
+    return f'<evidence label="{label}" source="{_attr(source)}">\n{body}\n</evidence>'
 
 
 def resolve_citations(answer: str, evidence: Sequence[LabelledEvidence]) -> ResolvedCitations:

@@ -1,7 +1,8 @@
 """Integration fixtures: a dedicated `<db>_test` database, migrated with Alembic.
 
 Skipped automatically when PostgreSQL at DATABASE_URL (or TEST_DATABASE_URL)
-is not reachable within a couple of seconds.
+is not reachable within a couple of seconds — unless REQUIRE_DB=1 (CI), which
+turns the skip into a failure so a missing database can't pass silently.
 """
 
 from __future__ import annotations
@@ -26,6 +27,12 @@ BACKEND_DIR = Path(__file__).resolve().parents[2]
 CONNECT_TIMEOUT_S = 2.0
 
 
+def _skip_or_fail(reason: str) -> None:
+    if os.environ.get("REQUIRE_DB") == "1":
+        pytest.fail(reason)
+    pytest.skip(reason)
+
+
 def _test_database_url() -> str:
     explicit = os.environ.get("TEST_DATABASE_URL")
     if explicit:
@@ -33,7 +40,7 @@ def _test_database_url() -> str:
     try:
         url = make_url(Settings().database_url)
     except ValidationError as exc:
-        pytest.skip(f"DATABASE_URL is not usable for integration tests: {exc.errors()[0]['msg']}")
+        _skip_or_fail(f"DATABASE_URL is not usable for integration tests: {exc.errors()[0]['msg']}")
     return url.set(database=f"{url.database}_test").render_as_string(hide_password=False)
 
 
@@ -62,7 +69,7 @@ def database_url() -> str:
     try:
         asyncio.run(_ensure_database(url))
     except (OSError, TimeoutError, asyncpg.PostgresError) as exc:
-        pytest.skip(f"PostgreSQL not reachable for integration tests ({type(exc).__name__}: {exc})")
+        _skip_or_fail(f"PostgreSQL not reachable for integration tests ({type(exc).__name__}: {exc})")
     command.upgrade(alembic_config(url), "head")
     return url
 
@@ -71,6 +78,7 @@ def database_url() -> str:
 async def session_factory(database_url: str) -> AsyncIterator[async_sessionmaker[AsyncSession]]:
     engine = create_engine(database_url)
     async with engine.begin() as conn:
-        await conn.execute(text("TRUNCATE conversations, messages"))
+        # CASCADE: message_retrievals (and later tables) reference messages.
+        await conn.execute(text("TRUNCATE conversations, messages, documents CASCADE"))
     yield create_session_factory(engine)
     await engine.dispose()

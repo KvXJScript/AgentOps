@@ -20,7 +20,11 @@ async def test_client_disconnect_mid_stream_keeps_partial_answer() -> None:
 
     assistant = repo.messages[-1]
     assert assistant.id == reply.assistant_message_id
-    assert (assistant.status, assistant.content, assistant.error_code) == (MessageStatus.INCOMPLETE, "one ", None)
+    assert (assistant.status, assistant.content, assistant.error_code) == (
+        MessageStatus.INCOMPLETE,
+        "one ",
+        "cancelled",
+    )
 
 
 async def test_disconnect_before_any_token_records_failed() -> None:

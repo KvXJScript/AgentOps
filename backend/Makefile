@@ -1,4 +1,4 @@
-.PHONY: install lint format typecheck test test-integration dev migrate check
+.PHONY: install lint format typecheck test test-integration eval dev migrate check
 
 install:
 	uv sync
@@ -20,6 +20,9 @@ test:
 
 test-integration:
 	uv run pytest -m integration
+
+eval:
+	uv run python -m evals
 
 dev:
 	uv run uvicorn agentops.main:app_factory --factory --reload --port 8000 --no-access-log

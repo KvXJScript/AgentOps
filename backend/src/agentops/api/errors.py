@@ -21,6 +21,23 @@ STATUS_BY_CODE: dict[str, int] = {
     "llm_rate_limited": 429,
     "llm_timeout": 504,
     "llm_unavailable": 502,
+    "retrieval_not_configured": 503,
+    "unsupported_file_type": 415,
+    "file_too_large": 413,
+    "empty_document": 422,
+    "corrupt_document": 422,
+    "document_not_ready": 409,
+    "embedding_failed": 500,
+    # Phase 3/4
+    "invalid_model_output": 502,
+    # Phase 4 — MCP tracker and approvals
+    "mcp_unavailable": 502,
+    "mcp_timeout": 504,
+    "invalid_tool_output": 502,
+    "report_not_ready": 409,
+    "proposal_not_pending": 409,
+    "payload_mismatch": 409,
+    "proposal_expired": 410,
     "internal_error": 500,
 }
 

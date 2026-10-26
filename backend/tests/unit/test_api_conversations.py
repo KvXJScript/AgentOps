@@ -68,6 +68,8 @@ async def test_get_conversation_returns_messages_oldest_first(harness: Harness) 
         "error_code",
         "model",
         "created_at",
+        "grounding",
+        "citations",
     }
 
 

@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Any
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Integer, MetaData, String, Text
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Integer, MetaData, String, Text, text
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 NAMING_CONVENTION = {
@@ -46,9 +47,13 @@ class MessageRow(Base):
     input_tokens: Mapped[int | None] = mapped_column(Integer)
     output_tokens: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    grounding: Mapped[str] = mapped_column(String(32), server_default="none")
+    # Snapshots (see infrastructure/db/documents.py), so citations outlive deleted documents.
+    citations: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, server_default=text("'[]'::jsonb"))
 
     __table_args__ = (
         CheckConstraint("role IN ('user', 'assistant')", name="role"),
+        CheckConstraint("grounding IN ('none', 'grounded', 'insufficient_evidence')", name="grounding"),
         CheckConstraint("status IN ('complete', 'incomplete', 'failed')", name="status"),
         CheckConstraint("role = 'assistant' OR status = 'complete'", name="user_messages_complete"),
         Index("ix_messages_conversation_id_created_at", "conversation_id", "created_at"),

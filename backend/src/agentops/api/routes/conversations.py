@@ -63,7 +63,12 @@ async def delete_conversation(conversation_id: UUID, service: ChatServiceDep) ->
 async def send_message(
     conversation_id: UUID, body: SendMessageRequest, request: Request, service: ChatServiceDep
 ) -> StreamingResponse:
-    reply = await service.send_message(conversation_id, body.content)
+    reply = await service.send_message(
+        conversation_id,
+        body.content,
+        use_documents=body.use_documents,
+        document_ids=list(dict.fromkeys(body.document_ids)) if body.document_ids is not None else None,
+    )
     return StreamingResponse(
         reply_events(reply, request_id_of(request)), media_type="text/event-stream", headers=SSE_HEADERS
     )
