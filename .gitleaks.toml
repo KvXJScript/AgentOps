@@ -6,8 +6,8 @@ useDefault = true
 [[allowlists]]
 description = "Fake credentials in redaction/config unit tests"
 paths = [
-  '''^backend/tests/unit/test_logging\.py$''',
-  '''^backend/tests/unit/test_config\.py$''',
+  '''(^|/)backend/tests/unit/test_logging\.py$''',
+  '''(^|/)backend/tests/unit/test_config\.py$''',
 ]
 
 [[allowlists]]

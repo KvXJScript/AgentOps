@@ -35,9 +35,7 @@ def _model(handler: Callable[[httpx2.Request], httpx2.Response]) -> GroqChatMode
         max_retries=0,
         http_client=httpx2.AsyncClient(transport=httpx2.MockTransport(handler)),
     )
-    return GroqChatModel(
-        api_key=KEY, model="openai/gpt-oss-120b", max_output_tokens=256, timeout_s=5, client=client
-    )
+    return GroqChatModel(api_key=KEY, model="openai/gpt-oss-120b", max_output_tokens=256, timeout_s=5, client=client)
 
 
 async def _collect(model: GroqChatModel) -> list[ChatChunk]:
