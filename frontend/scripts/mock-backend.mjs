@@ -10,9 +10,16 @@
  *   "/timeout"  → `error` llm_timeout before any token
  *   "/noconf"   → pre-stream 503 llm_not_configured envelope
  *   "/long"     → long markdown answer, slow tokens (test Stop + auto-scroll)
+ *
+ * Phase 2 (documents, retrieval, chat with documents): see mock-phase2.mjs.
+ * Phase 3 (report runs): see mock-reports.mjs.
+ * Phase 4 (local-tracker MCP + approvals): see mock-phase4.mjs.
  */
 import http from "node:http";
 import { randomUUID } from "node:crypto";
+import { handlePhase2, ragAnswer, retrievalTraces, withCitationState } from "./mock-phase2.mjs";
+import { handlePhase4 } from "./mock-phase4.mjs";
+import { handleReports } from "./mock-reports.mjs";
 
 const PORT = Number(process.env.MOCK_PORT ?? 8000);
 const MODEL = process.env.MOCK_MODEL ?? "fake-mock";
@@ -68,6 +75,9 @@ const server = http.createServer(async (req, res) => {
   if (req.method === "GET" && parts[0] === "ready") {
     return send(res, 200, { status: "ready", checks: { database: "ok", llm: "configured" }, llm: { provider: "fake", model: MODEL } }, rid);
   }
+  if (await handlePhase2(req, res, parts, rid)) return;
+  if (await handlePhase4(req, res, parts, rid)) return;
+  if (await handleReports(req, res, parts, rid)) return;
   if (parts[0] !== "conversations") return err(res, 404, "not_found", "Not found", rid);
 
   if (parts.length === 1 && req.method === "GET") {
@@ -88,7 +98,7 @@ const server = http.createServer(async (req, res) => {
   const conv = conversations.get(parts[1]);
   if (!conv) return err(res, 404, "not_found", "Conversation not found", rid);
 
-  if (parts.length === 2 && req.method === "GET") return send(res, 200, conv, rid);
+  if (parts.length === 2 && req.method === "GET") return send(res, 200, { ...conv, messages: conv.messages.map(withCitationState) }, rid);
   if (parts.length === 2 && req.method === "DELETE") {
     conversations.delete(conv.id);
     res.writeHead(204, { "X-Request-ID": rid });
@@ -100,7 +110,9 @@ const server = http.createServer(async (req, res) => {
     if (!content || content.length > 4000) return err(res, 422, "validation_error", "Content must be 1..4000 characters", rid);
     if (content.includes("/noconf")) return err(res, 503, "llm_not_configured", "No LLM provider is configured", rid);
 
-    const userMessage = { id: randomUUID(), conversation_id: conv.id, role: "user", content, status: "complete", error_code: null, model: null, created_at: now() };
+    const useDocs = body?.use_documents === true;
+    const docIds = Array.isArray(body?.document_ids) ? body.document_ids : undefined;
+    const userMessage = { id: randomUUID(), conversation_id: conv.id, role: "user", content, status: "complete", error_code: null, model: null, created_at: now(), grounding: "none", citations: [] };
     conv.messages.push(userMessage);
     if (conv.title === "New conversation") conv.title = content.slice(0, 60);
     conv.updated_at = now();
@@ -112,8 +124,15 @@ const server = http.createServer(async (req, res) => {
     res.on("close", () => { closed = true; });
 
     write("message.created", { user_message: userMessage, assistant_message_id: assistantId });
-    const finish = (status, text, error_code) => {
-      const m = { id: assistantId, conversation_id: conv.id, role: "assistant", content: text, status, error_code, model: MODEL, created_at: now() };
+    const rag = useDocs ? ragAnswer(content, docIds) : null;
+    if (rag) {
+      await sleep(350);
+      write("retrieval", { chunks: rag.chunks, sufficient: rag.sufficient });
+    }
+    const finish = (status, text, error_code, model = MODEL) => {
+      const g = rag && status === "complete" ? rag.finalize(text) : { grounding: "none", citations: [] };
+      if (rag) retrievalTraces.set(assistantId, { ...rag.trace, cited_chunk_ids: g.citations.map((c) => c.chunk_id) });
+      const m = { id: assistantId, conversation_id: conv.id, role: "assistant", content: text, status, error_code, model, created_at: now(), ...g };
       conv.messages.push(m);
       conv.updated_at = now();
       return m;
@@ -127,7 +146,14 @@ const server = http.createServer(async (req, res) => {
       return res.end();
     }
 
-    const tokens = answerFor(content).match(/\S+\s*|\s+/g) ?? [];
+    if (rag && !rag.sufficient) {
+      // Contract: the model is NOT called; fixed answer, status complete.
+      write("token", { delta: rag.answer });
+      const m = finish("complete", rag.answer, null, null);
+      write("done", { message: m, usage: { input_tokens: null, output_tokens: null } });
+      return res.end();
+    }
+    const tokens = (rag ? rag.answer : answerFor(content)).match(/\S+\s*|\s+/g) ?? [];
     const delay = content.includes("/long") ? TOKEN_DELAY_MS * 3 : TOKEN_DELAY_MS;
     let text = "";
     for (const [i, tok] of tokens.entries()) {

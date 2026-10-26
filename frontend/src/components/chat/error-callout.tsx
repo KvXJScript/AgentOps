@@ -35,36 +35,61 @@ export function ErrorCallout({
   onRetry,
   onDismiss,
   className,
+  compact = false,
 }: {
   error: ApiError;
   onRetry?: () => void;
   onDismiss?: () => void;
   className?: string;
+  /** Narrow columns (sidebar, list panes): title only, actions under the text. */
+  compact?: boolean;
 }) {
   const d = describeError(error);
+  const retry = d.retryable && onRetry && (
+    <Button size={compact ? "xs" : "sm"} variant="outline" onClick={onRetry}>
+      <RotateCwIcon /> Retry
+    </Button>
+  );
+  if (compact) {
+    return (
+      <div
+        role="alert"
+        className={cn("rounded-lg border border-destructive/25 bg-destructive/5 p-3 text-xs", className)}
+        data-error-code={error.code}
+      >
+        <p className="flex items-start gap-1.5 font-medium text-foreground">
+          <AlertCircleIcon className="mt-px size-3.5 shrink-0 text-destructive" aria-hidden />
+          {d.title}
+        </p>
+        <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1.5">
+          {retry}
+          {error.requestId && <RequestId id={error.requestId} className="min-w-0" />}
+        </div>
+      </div>
+    );
+  }
   return (
     <div
       role="alert"
       className={cn(
-        "flex items-start gap-3 rounded-xl border border-destructive/25 bg-destructive/5 px-4 py-3 text-sm",
+        "flex flex-col gap-3 rounded-xl border border-destructive/25 bg-destructive/5 px-4 py-3 text-sm sm:flex-row sm:items-start",
         className,
       )}
+      data-error-code={error.code}
     >
-      <AlertCircleIcon className="mt-0.5 size-4 shrink-0 text-destructive" aria-hidden />
-      <div className="min-w-0 flex-1 space-y-1">
-        <p className="font-medium text-foreground">{d.title}</p>
-        <p className="text-muted-foreground">{d.description}</p>
-        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 pt-0.5">
-          <span className="font-mono text-[11px] text-muted-foreground">{error.code}</span>
-          {error.requestId && <RequestId id={error.requestId} />}
+      <div className="flex min-w-0 flex-1 items-start gap-3">
+        <AlertCircleIcon className="mt-0.5 size-4 shrink-0 text-destructive" aria-hidden />
+        <div className="min-w-0 flex-1 space-y-1">
+          <p className="font-medium text-foreground">{d.title}</p>
+          <p className="text-muted-foreground">{d.description}</p>
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 pt-0.5">
+            <span className="font-mono text-[11px] break-all text-muted-foreground">{error.code}</span>
+            {error.requestId && <RequestId id={error.requestId} className="min-w-0" />}
+          </div>
         </div>
       </div>
-      <div className="flex shrink-0 items-center gap-1">
-        {d.retryable && onRetry && (
-          <Button size="sm" variant="outline" onClick={onRetry}>
-            <RotateCwIcon /> Retry
-          </Button>
-        )}
+      <div className="flex shrink-0 items-center gap-1 self-end sm:self-start">
+        {retry}
         {onDismiss && (
           <Button size="icon-sm" variant="ghost" aria-label="Dismiss error" onClick={onDismiss}>
             <XIcon />

@@ -23,3 +23,6 @@ next-env.d.ts
 # misc
 .DS_Store
 *.log
+
+# local runtime data (MCP demo tracker etc.)
+backend/.data/

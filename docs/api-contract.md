@@ -93,7 +93,8 @@ Persistence rules: the user message is stored before streaming starts. The assis
 | `empty_document`        | 422  | no extractable text after normalization              |
 | `corrupt_document`      | 422  | parser failed (e.g. broken/encrypted PDF)            |
 | `document_not_ready`    | 409  | operation needs status `ready`                       |
-| `embedding_failed`      | 500  | embedder error during ingestion (document → failed)  |
+| `embedding_failed`      | 500  | embedder error during ingestion (document → failed; upload still returns 201 with `status: failed`) |
+| `retrieval_not_configured` | 503 | no retriever/embedder wired on the server (RAG chat, search, reports) |
 
 ## Documents
 
@@ -120,7 +121,7 @@ Chunk = { id: string, document_id: string, ordinal: number, text: string, locati
 - `GET /api/v1/documents` → `{"items": Document[]}` newest first
 - `GET /api/v1/documents/{id}` → `Document`
 - `GET /api/v1/documents/{id}/chunks/{chunk_id}` → `Chunk` (used by citation popovers)
-- `POST /api/v1/documents/{id}/retry` → `200 Document` (only from `failed`; else `409 document_not_ready`-style conflict)
+- `POST /api/v1/documents/{id}/retry` → `200 Document` (only from `failed`; else `409 document_not_ready`)
 - `DELETE /api/v1/documents/{id}` → `204` (chunks + embeddings removed; existing citations keep their stored excerpt but show the source as deleted)
 
 ## Retrieval (inspection)
@@ -149,7 +150,7 @@ event: retrieval
 data: {"chunks": RetrievedChunk[], "sufficient": boolean}
 ```
 
-If `sufficient` is false (no chunk above `RETRIEVAL_MIN_SCORE`), the model is NOT called; the assistant message is a fixed
+If `sufficient` is false (no chunk above `RETRIEVAL_MIN_SCORE`), the model is NOT called (one `token` event carries the fixed text, `model` is null); the assistant message is a fixed
 "not enough evidence in your documents" answer with `status: "complete"`, `grounding: "insufficient_evidence"`.
 
 `Message` gains:
@@ -191,7 +192,7 @@ ReportRun = {
 }
 ```
 
-- `POST /api/v1/reports` body `{"question": string (10..1000 trimmed), "document_ids"?: string[]}` → `202 ReportRun` (status `queued`).
+- `POST /api/v1/reports` body `{"question": string (10..1000 trimmed), "document_ids"?: string[] (deduplicated)}` → `202 ReportRun` (status `queued`).
   The run executes in-process in the background (no queue); the client polls.
 - `GET /api/v1/reports` → `{"items": ReportRun[]}` newest first, max 50 (`report` omitted in list items)
 - `GET /api/v1/reports/{id}` → `ReportRun` (UI polls ~1 s while `queued`/`running`)
@@ -202,3 +203,59 @@ plus the `llm_*` codes. `insufficient_evidence` is a terminal status, not an err
 
 Reference rule: `report.references` are resolved server-side from the run's retrieved evidence exactly like chat citations;
 markers in section bodies that don't resolve are removed from the text and counted in the `verify` stage detail.
+
+---
+
+# Phase 4 — MCP integration (local tracker) and approval boundary
+
+One MCP server, **`local-tracker`**: a small deterministic issue tracker that ships in this repo and runs as a stdio
+subprocess of the backend. It is a **local demo server, not a real external service**; the UI and README must say so.
+Allowlist (exact names; any other tool the server advertises is ignored and can never be called):
+
+| tool            | access | approval |
+|-----------------|--------|----------|
+| `list_issues`   | read   | no       |
+| `search_issues` | read   | no       |
+| `create_issue`  | write  | **always** — only executed by the approval endpoint, never by the model or any other code path |
+
+```ts
+Issue = { id: string /* "LT-12" */, title: string, body: string, labels: string[], status: "open" | "closed", created_at: string }
+ToolInfo = { name: string, access: "read" | "write", requires_approval: boolean, description: string }
+ActionProposal = {
+  id: string,
+  tool: "create_issue", target: "local-tracker",
+  arguments: { title: string /* 5..120 */, body: string /* ≤ 4000 */, labels: ("bug"|"docs"|"follow-up"|"question")[] /* ≤ 3 */ },
+  summary: string,                     // one human sentence of what will happen
+  payload_hash: string,                // sha256 hex of canonical JSON {tool, target, arguments}
+  status: "pending" | "executing" | "executed" | "rejected" | "expired" | "failed",
+  source: { type: "report", id: string },
+  related_issues: Issue[],             // read via search_issues while drafting; untrusted, display only
+  created_at: string, expires_at: string /* +15 min */, decided_at: string | null,
+  result: { issue_id: string } | null, error_code: string | null
+}
+```
+
+- `GET /api/v1/integrations/tracker` → `{"server": {"name": "local-tracker", "label": "Local demo MCP server", "transport": "stdio", "status": "connected" | "unavailable"}, "tools": ToolInfo[]}`
+- `GET /api/v1/integrations/tracker/issues?query=&limit=` (query ≤ 200 chars, limit 1..50, default 20) → `{"items": Issue[], "truncated": boolean}` — read-only, via `list_issues`/`search_issues`.
+- `POST /api/v1/reports/{id}/proposals` → `201 ActionProposal` (`pending`). Report must be `succeeded` (`409 report_not_ready` otherwise).
+  The model drafts title/body/labels from the report (+ related issues as untrusted evidence) into a strict schema; the
+  **tool and target are fixed by the server**, never chosen by the model. One `pending` proposal per report: a second call
+  returns the existing one with `200`.
+- `GET /api/v1/proposals?status=` → `{"items": ActionProposal[]}` newest first · `GET /api/v1/proposals/{id}` → `ActionProposal`
+- `POST /api/v1/proposals/{id}/approve` body `{"payload_hash": string}` → `200 ActionProposal` (`executed`, or `failed` + `error_code`).
+  Server re-validates arguments, checks expiry and hash, then atomically moves `pending → executing` before calling the tool
+  with `idempotency_key = proposal.id`. Approving an already-`executed` proposal with the same hash returns it unchanged (`200`, no second call).
+- `POST /api/v1/proposals/{id}/reject` → `200 ActionProposal` (`rejected`; only from `pending`).
+
+New error codes: `mcp_unavailable` (502), `mcp_timeout` (504), `invalid_tool_output` (502), `report_not_ready` (409),
+`proposal_not_pending` (409), `payload_mismatch` (409), `proposal_expired` (410). Pending proposals past `expires_at`
+read back as `expired`.
+
+Clarifications:
+- `payload_hash` = sha256 hex of UTF-8 `json.dumps({"tool", "target", "arguments"}, sort_keys=True, separators=(",", ":"), ensure_ascii=False)`.
+  The client never recomputes it; it sends back the hash it displayed.
+- `POST /reports/{id}/proposals`: `invalid_model_output` → 502; `llm_*` → their v1 statuses.
+- Approve of an `executed` proposal with a different hash → `409 payload_mismatch` (no tool call). Approve/reject of an expired
+  proposal → `410 proposal_expired`; of any other non-pending one → `409 proposal_not_pending`.
+- `?status=expired` includes pending proposals past `expires_at`; `?status=pending` excludes them.
+- `summary` is generated server-side from the validated arguments, never written by the model.

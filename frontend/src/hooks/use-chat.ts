@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api/client";
 import { ApiError } from "@/lib/api/errors";
-import type { Conversation, Message } from "@/lib/api/types";
+import type { Conversation, Message, RetrievedChunk } from "@/lib/api/types";
 
 /** A message as rendered by the UI; `local` marks client-only state. */
 export type UIMessage = Message & {
@@ -19,6 +19,15 @@ export interface StreamState {
   conversationId: string;
   assistantId: string | null;
   content: string;
+  /** Phase 2: set when the stream carried a `retrieval` event. */
+  retrieval: { chunks: RetrievedChunk[]; sufficient: boolean } | null;
+  /** Whether this send asked for document grounding. */
+  useDocuments: boolean;
+}
+
+export interface SendOptions {
+  useDocuments?: boolean;
+  documentIds?: string[];
 }
 
 export interface SendError {
@@ -28,6 +37,8 @@ export interface SendError {
   content: string;
   /** True when nothing was persisted (pre-stream failure). */
   preStream: boolean;
+  /** Document options of the failed send, reused by Retry. */
+  options?: SendOptions;
 }
 
 export type ListState =
@@ -167,7 +178,7 @@ export function useChat() {
 
   /** Returns true if the message was accepted by the server. */
   const send = useCallback(
-    async (rawContent: string): Promise<boolean> => {
+    async (rawContent: string, options: SendOptions = {}): Promise<boolean> => {
       const content = rawContent.trim();
       if (!content || currentStream()) return false;
       setSendError(null);
@@ -185,7 +196,7 @@ export function useChat() {
           setActiveIdState(created.id);
           writeConversationToUrl(created.id);
         } catch (err) {
-          setSendError({ conversationId: null, error: toApiError(err), content, preStream: true });
+          setSendError({ conversationId: null, error: toApiError(err), content, preStream: true, options });
           return false;
         }
       }
@@ -207,12 +218,20 @@ export function useChat() {
 
       const ac = new AbortController();
       abortRef.current = ac;
-      updateStream({ conversationId: cid, assistantId: null, content: "" });
+      updateStream({
+        conversationId: cid,
+        assistantId: null,
+        content: "",
+        retrieval: null,
+        useDocuments: options.useDocuments === true,
+      });
       let accepted = false;
 
       try {
         const result = await api.sendMessage(cid, content, {
           signal: ac.signal,
+          useDocuments: options.useDocuments,
+          documentIds: options.documentIds,
           onEvent: (ev) => {
             const s = currentStream();
             if (!s) return;
@@ -220,6 +239,8 @@ export function useChat() {
               accepted = true;
               patchThread(cid, (m) => m.map((x) => (x.id === tempId ? ev.user_message : x)));
               updateStream({ ...s, assistantId: ev.assistant_message_id });
+            } else if (ev.type === "retrieval") {
+              updateStream({ ...s, retrieval: { chunks: ev.chunks, sufficient: ev.sufficient } });
             } else if (ev.type === "token") {
               updateStream({ ...s, content: s.content + ev.delta });
             }
@@ -260,7 +281,7 @@ export function useChat() {
         const s = currentStream();
         if (!accepted) {
           patchThread(cid, (m) => m.filter((x) => x.id !== tempId));
-          setSendError({ conversationId: cid, error, content, preStream: true });
+          setSendError({ conversationId: cid, error, content, preStream: true, options });
         } else {
           const partial = s?.content ?? "";
           const messageId =
@@ -278,7 +299,7 @@ export function useChat() {
               created_at: new Date().toISOString(),
             },
           ]);
-          setSendError({ conversationId: cid, error, content, preStream: false });
+          setSendError({ conversationId: cid, error, content, preStream: false, options });
         }
       } finally {
         abortRef.current = null;

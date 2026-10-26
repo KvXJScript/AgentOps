@@ -1,9 +1,12 @@
 "use client";
 
-import { memo, useState, type ComponentProps } from "react";
+import { memo, useMemo, useState, type ComponentProps } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { CheckIcon, CopyIcon } from "lucide-react";
+import { CitationChip } from "./citations";
+import { CITATION_ATTR, citationMap, remarkCitations } from "@/lib/api/citations";
+import type { Citation } from "@/lib/api/types";
 import { cn } from "@/lib/utils";
 
 function CodeBlock({ children, ...props }: ComponentProps<"pre">) {
@@ -43,14 +46,47 @@ const components: Components = {
   ),
 };
 
+const NO_CITATIONS: readonly Citation[] = [];
+
 /**
  * Renders model output as Markdown. Raw HTML is never rendered (`skipHtml`,
  * no rehype-raw) and react-markdown's default URL transform drops
  * `javascript:`-style links. Images are not loaded: model output is untrusted
  * and an image URL is a classic data-exfiltration channel, so only the alt
  * text is shown.
+ *
+ * `[Sn]` markers become citation chips only when `citations` contains that
+ * marker; any other marker is left as plain text.
  */
-export const Markdown = memo(function Markdown({ content, className }: { content: string; className?: string }) {
+export const Markdown = memo(function Markdown({
+  content,
+  className,
+  citations = NO_CITATIONS,
+}: {
+  content: string;
+  className?: string;
+  citations?: readonly Citation[];
+}) {
+  const { remarkPlugins, mdComponents } = useMemo(() => {
+    const byMarker = citationMap(citations);
+    if (byMarker.size === 0) return { remarkPlugins: [remarkGfm], mdComponents: components };
+    const withChips: Components = {
+      ...components,
+      sup: ({ node, children, ...props }) => {
+        const marker = node?.properties?.[CITATION_ATTR];
+        const citation = typeof marker === "string" ? byMarker.get(marker) : undefined;
+        if (citation) return <CitationChip citation={citation} />;
+        return <sup {...props}>{children}</sup>;
+      },
+    };
+    return {
+      remarkPlugins: [remarkGfm, [remarkCitations, { markers: new Set(byMarker.keys()) }]] as NonNullable<
+        ComponentProps<typeof ReactMarkdown>["remarkPlugins"]
+      >,
+      mdComponents: withChips,
+    };
+  }, [citations]);
+
   return (
     <div
       className={cn(
@@ -65,11 +101,11 @@ export const Markdown = memo(function Markdown({ content, className }: { content
       )}
     >
       <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
+        remarkPlugins={remarkPlugins}
         skipHtml
         disallowedElements={["img"]}
         unwrapDisallowed
-        components={components}
+        components={mdComponents}
       >
         {content}
       </ReactMarkdown>

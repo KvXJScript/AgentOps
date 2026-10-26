@@ -123,4 +123,50 @@ describe("proxyRequest", () => {
     await proxyRequest(new Request("http://x/api/v1/x"), ["conversations", "a b/c"], { fetch: fetchImpl });
     expect(fetchImpl.mock.calls[0][0]).toBe("http://localhost:8000/api/v1/conversations/a%20b%2Fc");
   });
+  it("passes multipart upload bodies through byte-for-byte with their boundary", async () => {
+    const form = new FormData();
+    const bytes = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x00, 0xff, 0xfe, 0x0a, 0x0d]); // binary, incl. NUL/CRLF
+    form.append("file", new File([bytes], "paper.pdf", { type: "application/pdf" }));
+    form.append("title", "Zażółć ✓");
+    const req = new Request("http://localhost:3000/api/v1/documents", { method: "POST", body: form });
+    const contentType = req.headers.get("content-type")!;
+    expect(contentType).toMatch(/^multipart\/form-data; boundary=/);
+    const original = new Uint8Array(await req.clone().arrayBuffer());
+
+    const fetchImpl = upstreamOk(JSON.stringify({ id: "d1" }), { status: 201, headers: { "content-type": "application/json" } });
+    const res = await proxyRequest(req, ["documents"], { fetch: fetchImpl });
+
+    const [url, init] = fetchImpl.mock.calls[0];
+    expect(url).toBe("http://localhost:8000/api/v1/documents");
+    expect(new Headers(init?.headers).get("content-type")).toBe(contentType);
+    expect(new Uint8Array(init?.body as ArrayBuffer)).toEqual(original);
+    // The forwarded body is still a parseable multipart payload.
+    const reparsed = await new Request("http://x", { method: "POST", body: init?.body as ArrayBuffer, headers: { "content-type": contentType } }).formData();
+    expect(new Uint8Array(await (reparsed.get("file") as File).arrayBuffer())).toEqual(bytes);
+    expect(reparsed.get("title")).toBe("Zażółć ✓");
+    expect(res.status).toBe(201);
+  });
+
+  it("forwards custom response headers such as X-Duplicate", async () => {
+    const fetchImpl = upstreamOk('{"id":"d1"}', { status: 200, headers: { "content-type": "application/json", "x-duplicate": "true" } });
+    const res = await proxyRequest(new Request("http://x/api/v1/documents", { method: "POST", body: "x" }), ["documents"], { fetch: fetchImpl });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-duplicate")).toBe("true");
+  });
+
+  it("refuses bodies above the proxy ceiling without calling the backend", async () => {
+    const fetchImpl = upstreamOk("{}", { status: 201 });
+    const big = new Request("http://x/api/v1/documents", { method: "POST", body: new Uint8Array(2048) });
+    const res = await proxyRequest(big, ["documents"], { fetch: fetchImpl, maxBodyBytes: 1024 });
+    expect(res.status).toBe(413);
+    expect((await res.json()).error.code).toBe("file_too_large");
+    expect(fetchImpl).not.toHaveBeenCalled();
+
+    const declared = new Request("http://x/api/v1/documents", { method: "POST", body: "small", headers: { "content-length": "999999999" } });
+    expect((await proxyRequest(declared, ["documents"], { fetch: fetchImpl, maxBodyBytes: 1024 })).status).toBe(413);
+
+    vi.stubEnv("PROXY_MAX_BODY_BYTES", "4096");
+    const ok = await proxyRequest(new Request("http://x/api/v1/documents", { method: "POST", body: new Uint8Array(2048) }), ["documents"], { fetch: fetchImpl });
+    expect(ok.status).toBe(201);
+  });
 });

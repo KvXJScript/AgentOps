@@ -1,0 +1,11 @@
+# Secret scanning config (gitleaks). Default rules plus a narrow allowlist for the
+# deliberately fake keys used by the log-redaction and config tests.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Fake credentials in redaction/config unit tests"
+paths = [
+  '''^backend/tests/unit/test_logging\.py$''',
+  '''^backend/tests/unit/test_config\.py$''',
+]

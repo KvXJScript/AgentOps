@@ -18,6 +18,8 @@ export function Composer({
   disabled = false,
   autoFocus = false,
   textareaRef,
+  toolbar,
+  placeholder,
 }: {
   value: string;
   onChange: (v: string) => void;
@@ -27,6 +29,9 @@ export function Composer({
   disabled?: boolean;
   autoFocus?: boolean;
   textareaRef?: React.RefObject<HTMLTextAreaElement | null>;
+  /** Extra controls on the left of the footer row (e.g. "Use my documents"). */
+  toolbar?: React.ReactNode;
+  placeholder?: string;
 }) {
   const localRef = useRef<HTMLTextAreaElement | null>(null);
   const ref = textareaRef ?? localRef;
@@ -71,7 +76,7 @@ export function Composer({
           autoFocus={autoFocus}
           disabled={streaming || disabled}
           maxLength={MAX_MESSAGE_LENGTH}
-          placeholder={streaming ? "Waiting for the response…" : "Ask anything…"}
+          placeholder={streaming ? "Waiting for the response…" : (placeholder ?? "Ask anything…")}
           aria-describedby="composer-hint composer-counter"
           aria-invalid={over || undefined}
           className="max-h-60 min-h-[52px] w-full resize-none bg-transparent px-4 pt-3.5 pb-1 text-[15px] leading-6 outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-60"
@@ -84,7 +89,8 @@ export function Composer({
           }}
         />
         <div className="flex items-center justify-between gap-2 px-3 pb-2.5">
-          <p id="composer-hint" className="text-xs text-muted-foreground">
+          {toolbar && <div className="flex min-w-0 items-center">{toolbar}</div>}
+          <p id="composer-hint" className={cn("text-xs text-muted-foreground", toolbar && "sr-only lg:not-sr-only lg:mr-auto")}>
             <kbd className="font-sans">Enter</kbd> to send · <kbd className="font-sans">Shift</kbd>+
             <kbd className="font-sans">Enter</kbd> for a new line
           </p>

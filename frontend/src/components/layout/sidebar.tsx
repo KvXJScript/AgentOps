@@ -1,15 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import {
-  CheckSquareIcon,
-  FileTextIcon,
-  MessageSquareIcon,
-  NotebookPenIcon,
-  PlusIcon,
-  RotateCwIcon,
-  Trash2Icon,
-} from "lucide-react";
+import { PlusIcon, Trash2Icon } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -22,34 +14,17 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { RelativeTime } from "@/components/ui/relative-time";
 import { Brand } from "./brand";
+import { PrimaryNav } from "./primary-nav";
 import { StatusIndicator } from "./status-indicator";
 import { ThemeToggle } from "./theme-toggle";
-import { describeError } from "@/lib/api/errors";
+import { ErrorCallout } from "@/components/chat/error-callout";
 import type { Conversation } from "@/lib/api/types";
 import type { ListState } from "@/hooks/use-chat";
 import type { ReadyState } from "@/hooks/use-ready";
 import { cn } from "@/lib/utils";
 
-/** Upcoming product areas; shown disabled until their phase ships. */
-const NAV = [
-  { label: "Chat", icon: MessageSquareIcon, enabled: true },
-  { label: "Documents", icon: FileTextIcon, enabled: false },
-  { label: "Reports", icon: NotebookPenIcon, enabled: false },
-  { label: "Approvals", icon: CheckSquareIcon, enabled: false },
-] as const;
-
-function relativeTime(iso: string): string {
-  const diff = Date.now() - new Date(iso).getTime();
-  const min = Math.round(diff / 60_000);
-  if (min < 1) return "now";
-  if (min < 60) return `${min}m`;
-  const h = Math.round(min / 60);
-  if (h < 24) return `${h}h`;
-  const d = Math.round(h / 24);
-  if (d < 7) return `${d}d`;
-  return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric" });
-}
 
 export interface SidebarProps {
   list: ListState;
@@ -75,31 +50,7 @@ export function Sidebar(props: SidebarProps) {
         <Brand />
       </div>
 
-      <nav aria-label="Primary" className="px-2">
-        <ul className="space-y-0.5">
-          {NAV.map(({ label, icon: Icon, enabled }) => (
-            <li key={label}>
-              {enabled ? (
-                <span
-                  aria-current="page"
-                  className="flex h-8 items-center gap-2.5 rounded-md bg-sidebar-accent px-2.5 text-sm font-medium text-sidebar-accent-foreground"
-                >
-                  <Icon className="size-4" aria-hidden /> {label}
-                </span>
-              ) : (
-                <span
-                  aria-disabled="true"
-                  title={`${label} is coming soon`}
-                  className="flex h-8 cursor-not-allowed items-center gap-2.5 rounded-md px-2.5 text-sm text-muted-foreground/70"
-                >
-                  <Icon className="size-4" aria-hidden /> {label}
-                  <span className="ml-auto rounded border px-1.5 text-[10px] tracking-wide uppercase">Soon</span>
-                </span>
-              )}
-            </li>
-          ))}
-        </ul>
-      </nav>
+      <PrimaryNav />
 
       <div className="mt-5 flex items-center justify-between px-4 pb-1.5">
         <h2 className="text-xs font-medium tracking-wide text-muted-foreground uppercase">Conversations</h2>
@@ -123,12 +74,7 @@ export function Sidebar(props: SidebarProps) {
         ) : (
           <>
             {list.status === "error" && (
-              <div role="alert" className="mx-1 mb-2 rounded-lg border border-destructive/25 bg-destructive/5 p-3 text-xs">
-                <p className="font-medium">{describeError(list.error).title}</p>
-                <Button variant="outline" size="xs" className="mt-2" onClick={onRetryList}>
-                  <RotateCwIcon /> Retry
-                </Button>
-              </div>
+              <ErrorCallout compact error={list.error} onRetry={onRetryList} className="mx-1 mb-2" />
             )}
             {conversations.length === 0 && list.status === "ready" ? (
               <p className="px-3 py-6 text-center text-xs leading-5 text-muted-foreground">
@@ -156,9 +102,11 @@ export function Sidebar(props: SidebarProps) {
                           <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-brand" aria-label="Responding" />
                         )}
                         <span className="truncate">{c.title}</span>
-                        <span className="ml-auto shrink-0 text-[11px] text-muted-foreground group-hover/item:opacity-0 group-focus-within/item:opacity-0">
-                          {relativeTime(c.updated_at)}
-                        </span>
+                        <RelativeTime
+                          iso={c.updated_at}
+                          short
+                          className="ml-auto shrink-0 text-[11px] text-muted-foreground group-hover/item:opacity-0 group-focus-within/item:opacity-0"
+                        />
                       </button>
                       <Button
                         variant="ghost"

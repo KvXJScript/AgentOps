@@ -5,6 +5,11 @@
  * - Method, body, query string, X-Request-ID and status are passed through.
  * - The upstream body is returned as-is (a ReadableStream), never buffered,
  *   so SSE tokens reach the browser as soon as the backend flushes them.
+ * - Request bodies (JSON or multipart uploads) are forwarded byte-for-byte with
+ *   their original Content-Type (incl. the multipart boundary). Bodies above
+ *   PROXY_MAX_BODY_BYTES are refused before being buffered; the limit sits well
+ *   above the backend's MAX_UPLOAD_BYTES so the backend stays authoritative.
+ * - Custom response headers (e.g. `X-Duplicate`) are passed through.
  */
 
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
@@ -12,9 +17,18 @@ export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>
 export interface ProxyOptions {
   backendUrl?: string;
   fetch?: FetchLike;
+  maxBodyBytes?: number;
 }
 
 export const DEFAULT_BACKEND_URL = "http://localhost:8000";
+/** Hard ceiling for proxied request bodies (memory guard, not a business rule). */
+export const DEFAULT_MAX_BODY_BYTES = 25 * 1024 * 1024;
+
+function maxBodyBytes(opts: ProxyOptions): number {
+  if (opts.maxBodyBytes !== undefined) return opts.maxBodyBytes;
+  const n = Number(process.env.PROXY_MAX_BODY_BYTES);
+  return Number.isFinite(n) && n > 0 ? n : DEFAULT_MAX_BODY_BYTES;
+}
 
 /** Request headers forwarded upstream (everything else is dropped). */
 const FORWARD_REQUEST_HEADERS = ["accept", "content-type", "x-request-id", "last-event-id"];
@@ -77,7 +91,15 @@ export async function proxyRequest(
 
   const method = req.method.toUpperCase();
   const hasBody = method !== "GET" && method !== "HEAD";
+  const limit = maxBodyBytes(opts);
+  const declared = Number(req.headers.get("content-length"));
+  if (hasBody && Number.isFinite(declared) && declared > limit) {
+    return errorResponse(413, "file_too_large", "The request body is too large", requestId);
+  }
   const body = hasBody ? await req.arrayBuffer() : undefined;
+  if (body && body.byteLength > limit) {
+    return errorResponse(413, "file_too_large", "The request body is too large", requestId);
+  }
 
   const doFetch: FetchLike = opts.fetch ?? ((input, init) => fetch(input, init));
   let upstream: Response;

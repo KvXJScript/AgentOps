@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowDownIcon, MenuIcon, XIcon } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -10,12 +10,35 @@ import { StubModelBadge } from "@/components/layout/status-indicator";
 import { Composer } from "./composer";
 import { EmptyState } from "./empty-state";
 import { ErrorCallout } from "./error-callout";
-import { AssistantBubble, MessageItem } from "./message-item";
-import { useChat } from "@/hooks/use-chat";
+import { AssistantBubble, MessageItem, RetrievalStatus } from "./message-item";
+import { DocumentScope, useReadyDocuments, type DocumentScopeValue } from "./document-scope";
+import { useChat, type SendOptions } from "@/hooks/use-chat";
 import { isStubModel, useReady } from "@/hooks/use-ready";
 import { useStickToBottom } from "@/hooks/use-stick-to-bottom";
 import { ApiError, describeError } from "@/lib/api/errors";
 import { cn } from "@/lib/utils";
+
+const SCOPE_KEY = "agentops:document-scope";
+
+function readStoredScope(): DocumentScopeValue {
+  const fallback: DocumentScopeValue = { enabled: false, documentIds: [] };
+  if (typeof window === "undefined") return fallback;
+  try {
+    const raw = window.localStorage.getItem(SCOPE_KEY);
+    const parsed = (raw ? JSON.parse(raw) : null) as { enabled?: unknown; documentIds?: unknown } | null;
+    const v: DocumentScopeValue = {
+      enabled: parsed?.enabled === true,
+      documentIds: Array.isArray(parsed?.documentIds)
+        ? parsed.documentIds.filter((x): x is string => typeof x === "string")
+        : [],
+    };
+    // Deep link from the Documents page ("Ask your documents").
+    if (new URLSearchParams(window.location.search).get("docs") === "1") v.enabled = true;
+    return v;
+  } catch {
+    return fallback;
+  }
+}
 
 function ThreadSkeleton() {
   return (
@@ -44,14 +67,48 @@ export function ChatApp() {
   const [draft, setDraft] = useState("");
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const [scope, setScopeState] = useState<DocumentScopeValue>({ enabled: false, documentIds: [] });
+  const readyDocs = useReadyDocuments();
+
+  // Restore the documents toggle after hydration (localStorage / ?docs=1).
+  useEffect(() => {
+    const stored = readStoredScope();
+    const t = window.setTimeout(() => setScopeState(stored), 0);
+    return () => window.clearTimeout(t);
+  }, []);
+
+  const setScope = useCallback((v: DocumentScopeValue) => {
+    setScopeState(v);
+    try {
+      window.localStorage.setItem(SCOPE_KEY, JSON.stringify(v));
+    } catch {
+      /* storage unavailable: keep in memory only */
+    }
+  }, []);
+
+  const readyItems = readyDocs.state.status === "ready" ? readyDocs.state.items : null;
+  // Only send while at least one ready document exists (or the list hasn't loaded yet).
+  const docsActive = scope.enabled && (readyItems === null || readyItems.length > 0);
+  const sendOptions = useMemo<SendOptions>(
+    () =>
+      docsActive
+        ? {
+            useDocuments: true,
+            documentIds: scope.documentIds.filter((id) => readyItems === null || readyItems.some((d) => d.id === id)),
+          }
+        : {},
+    [docsActive, scope.documentIds, readyItems],
+  );
 
   const thread = chat.activeThread;
   const messages = thread?.messages ?? [];
   const liveStream = chat.stream && chat.stream.conversationId === chat.activeId ? chat.stream : null;
   const busy = chat.isStreaming;
 
+  const isEmptyThread = !chat.activeId || (thread?.status === "ready" && messages.length === 0 && !liveStream);
   const { ref: scrollRef, onScroll, atBottom, scrollToBottom } = useStickToBottom<HTMLDivElement>(
     `${chat.activeId}:${messages.length}:${liveStream?.content.length ?? -1}`,
+    isEmptyThread,
   );
 
   const readyData = ready.kind === "ok" ? ready.data : null;
@@ -72,16 +129,16 @@ export function ChatApp() {
   }, [mobileNavOpen]);
 
   const submit = useCallback(
-    async (text: string) => {
+    async (text: string, options?: SendOptions) => {
       const content = text.trim();
       if (!content) return;
       setDraft("");
       scrollToBottom();
-      const accepted = await chat.send(content);
+      const accepted = await chat.send(content, options ?? sendOptions);
       // Pre-stream failure: nothing was stored, give the text back to the user.
       if (!accepted) setDraft((d) => (d ? d : content));
     },
-    [chat, scrollToBottom],
+    [chat, scrollToBottom, sendOptions],
   );
 
   const newChat = useCallback(() => {
@@ -127,7 +184,6 @@ export function ChatApp() {
     ? (chat.activeConversation?.title ?? (thread?.status === "loading" ? "" : "Conversation"))
     : "New conversation";
 
-  const isEmptyThread = !chat.activeId || (thread?.status === "ready" && messages.length === 0 && !liveStream);
   const noConversations = chat.list.status === "ready" && chat.conversations.length === 0;
 
   let body: React.ReactNode;
@@ -153,11 +209,16 @@ export function ChatApp() {
         title={noConversations ? "Welcome to AgentOps" : "How can I help?"}
         subtitle={
           noConversations
-            ? "Start your first conversation. Answers stream in real time and every conversation is saved."
+            ? "Chat with a model, ground answers in your own documents, and turn them into reviewed actions."
             : "Ask a question or pick a suggestion to get started."
         }
         disabled={busy}
         onPick={(p) => void submit(p)}
+        onboarding={
+          noConversations || readyItems?.length === 0
+            ? { readyDocuments: readyItems?.length ?? null, documentsOn: scope.enabled }
+            : undefined
+        }
       />
     );
   } else {
@@ -173,7 +234,11 @@ export function ChatApp() {
         ))}
         {liveStream && (
           <div aria-live="off">
-            <AssistantBubble content={liveStream.content} streaming />
+            <AssistantBubble
+              content={liveStream.content}
+              streaming
+              header={liveStream.useDocuments ? <RetrievalStatus retrieval={liveStream.retrieval} /> : undefined}
+            />
           </div>
         )}
       </div>
@@ -265,7 +330,7 @@ export function ChatApp() {
               onRetry={() => {
                 const content = chat.sendError!.content;
                 if (chat.sendError!.preStream) setDraft("");
-                void submit(content);
+                void submit(content, chat.sendError!.options);
               }}
               onDismiss={chat.dismissError}
             />
@@ -278,6 +343,16 @@ export function ChatApp() {
             streaming={busy}
             autoFocus
             textareaRef={textareaRef}
+            placeholder={docsActive ? "Ask about your documents…" : undefined}
+            toolbar={
+              <DocumentScope
+                value={scope}
+                onChange={setScope}
+                disabled={busy}
+                docs={readyDocs.state}
+                onRefreshDocs={() => void readyDocs.refresh()}
+              />
+            }
           />
           <p className={cn("mx-auto mt-2 max-w-3xl text-center text-[11px] text-muted-foreground")}>
             AI responses can be inaccurate. Verify important information.

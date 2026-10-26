@@ -1,0 +1,5 @@
+# Inherit the backend config; the eval runner imports Phase 4 modules lazily so it can report them as skipped.
+extend = "../pyproject.toml"
+
+[lint]
+extend-ignore = ["PLC0415", "PLR0915"]
