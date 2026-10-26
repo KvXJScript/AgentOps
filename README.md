@@ -1,23 +1,247 @@
 # AgentOps
 
-> Work in progress. A full-stack AI portfolio project: RAG with verifiable citations, a bounded LangGraph workflow,
-> an MCP integration with human approval, running on free model tiers.
+**Ask questions about your own documents and get answers you can check. AgentOps turns those answers into a cited
+report and a proposed follow-up action, and nothing is written anywhere until a person approves the exact payload.**
 
-**Status:** Phase 1 is done: streaming chat with persisted history and a replaceable LLM provider (Groq by default,
-Gemini optional). See [`docs/implementation-status.md`](docs/implementation-status.md) for what is verified.
+A full-stack AI portfolio project: retrieval-augmented generation with citations resolved on the server, a bounded
+LangGraph workflow, and an MCP tool integration behind a human approval step. It runs entirely on free model tiers
+and local embeddings.
 
-## Stack
+> **No hosted demo.** The screenshots below are the main way to review the UI. They were captured in a real browser
+> from the running app (FastAPI, Postgres/pgvector, local embeddings, the MCP subprocess and the live
+> `openai/gpt-oss-120b` model on Groq), using synthetic documents.
 
-- **Backend:** FastAPI, SQLAlchemy (async), Postgres + pgvector, structlog. Layout: `api → application → domain ← infrastructure`.
-- **Frontend:** Next.js (App Router), TypeScript, Tailwind, shadcn/ui. A server-side proxy keeps credentials off the browser.
+<p align="center">
+  <img src="docs/screenshots/rag-answer-with-citations.png" alt="Chat answer grounded in uploaded documents, with numbered citation chips and a sources row" width="100%">
+  <br><em>An answer grounded in uploaded documents. Each numbered chip resolves on the server to a real chunk.</em>
+</p>
+
+| | |
+|---|---|
+| ![Retrieval inspector showing ranked chunks with similarity scores, cited vs not cited, including an ignored prompt-injection chunk](docs/screenshots/retrieval-inspector.png) | ![Report page with the five-stage LangGraph timeline and a cited report](docs/screenshots/report-workflow.png) |
+| *Retrieval inspector: rank, cosine score, cited or not. Chunk #6 holds a prompt-injection payload; it was retrieved but ignored and never cited.* | *Report workflow: validate → retrieve → analyze → draft → verify, with per-stage timing and verified references.* |
+| ![Approval review screen listing the exact tool, target, arguments and payload hash](docs/screenshots/approval-review.png) | ![Confirmation dialog restating the action and the payload hash being approved](docs/screenshots/approval-confirm.png) |
+| *Approval review: the model drafted a `create_issue` call. Tool and target are fixed by the server; nothing has run.* | *Approval is bound to the payload hash on screen. It runs once.* |
+
+![Tracker page showing the local demo MCP server, its allowlisted tools and issues rendered as untrusted plain text](docs/screenshots/tracker-mcp.png)
+*The local demo MCP server (clearly labelled), its three allowlisted tools, and issues shown as untrusted tool output.
+LT-6 is a seeded prompt-injection fixture.*
+
+## What it does
+
+1. **Upload** Markdown, text or PDF. Ingestion validates, extracts, chunks and embeds locally, then marks the document
+   ready. Re-uploading the same file is detected by checksum.
+2. **Ask with "Use my documents".** Relevant chunks are retrieved and labelled `S1..Sn` on the server. The model may
+   only cite those labels, and invented or document-supplied markers are dropped. If nothing relevant is found, the app
+   says so **without calling the model**.
+3. **Write a report.** A five-node LangGraph workflow extracts findings and drafts sections, then verifies every
+   reference against the evidence it retrieved. If no valid reference survives, it reports insufficient evidence
+   instead of returning an ungrounded report.
+4. **Propose a follow-up.** From a finished report, the model drafts a `create_issue` call for the local tracker. The
+   proposal is stored as structured data with a SHA-256 payload hash and a 15-minute expiry.
+5. **Approve or reject.** Only the approval endpoint can execute the write tool. It re-validates the arguments,
+   compares the hash, atomically claims the proposal, and calls the tool with an idempotency key. Approving twice
+   creates one issue.
+
+## Architecture
+
+Detailed diagrams, module responsibilities and failure boundaries are in
+[`docs/architecture.md`](docs/architecture.md). The design decisions are recorded in [`docs/adr/`](docs/adr/).
+
+```mermaid
+flowchart LR
+  subgraph Browser
+    UI[Next.js pages]
+  end
+  subgraph Next[Next.js server]
+    Proxy[API proxy route<br/>no secrets in the browser]
+  end
+  subgraph Backend[FastAPI backend]
+    API[api: routes, validation, SSE]
+    App[application: chat, RAG, ingestion,<br/>LangGraph reports, proposals, approvals]
+    Ports[domain ports]
+    Infra[infrastructure adapters]
+  end
+  PG[(Postgres + pgvector)]
+  Emb[fastembed<br/>local multilingual model]
+  LLM[Groq or Gemini<br/>HTTPS]
+  MCP[local-tracker<br/>MCP stdio subprocess]
+
+  UI --> Proxy --> API --> App --> Ports
+  Infra -. implements .-> Ports
+  Infra --> PG
+  Infra --> Emb
+  Infra --> LLM
+  Infra --> MCP
+```
+
+**RAG request**
+
+```mermaid
+sequenceDiagram
+  participant U as Browser
+  participant B as Backend
+  participant V as pgvector
+  participant M as LLM
+  U->>B: question + use_documents
+  B->>V: embed locally, cosine search (ready docs, scope)
+  V-->>B: ranked chunks
+  alt no chunk above RETRIEVAL_MIN_SCORE
+    B-->>U: insufficient evidence (model not called)
+  else evidence found
+    B->>B: label S1..Sn, wrap as untrusted evidence
+    B->>M: stream with grounded system prompt
+    M-->>U: tokens (SSE)
+    B->>B: resolve [Sn] against included evidence, drop invalid markers
+    B-->>U: done + citations (stored with a retrieval trace)
+  end
+```
+
+**Report → proposal → approval**
+
+```mermaid
+sequenceDiagram
+  participant U as Browser
+  participant G as LangGraph workflow
+  participant P as Proposal service
+  participant A as Approval service
+  participant T as local-tracker (MCP)
+  U->>G: start report (202, then poll)
+  G->>G: validate, retrieve, analyze, draft, verify
+  G-->>U: report with verified references
+  U->>P: propose follow-up
+  P->>T: search_issues (read-only)
+  P->>P: model drafts title/body/labels, server fixes tool + target + hash + expiry
+  P-->>U: pending proposal
+  U->>A: approve with payload_hash
+  A->>A: re-validate, compare hash, atomic pending to executing
+  A->>T: create_issue (idempotency key = proposal id)
+  T-->>U: issue created once
+```
+
+## Key technical decisions
+
+- **Ports and adapters with one resilience layer.** Providers sit behind small `Protocol` ports. Timeouts and bounded
+  retries (exponential backoff with jitter, `Retry-After` honoured, no retry after the first streamed token) live only
+  in `ResilientChatModel`, so retries never multiply. [ADR 0001](docs/adr/0001-ports-and-adapters-with-one-resilience-layer.md)
+- **Citations resolved on the server, not trusted from the model.** The label-to-chunk mapping never leaves the
+  backend, and citations are snapshotted so they survive deletion of the source document.
+  [ADR 0003](docs/adr/0003-server-side-citation-resolution.md)
+- **One datastore.** Postgres holds relational data and vectors (pgvector HNSW). There is no separate vector DB, Redis
+  or queue. [ADR 0002](docs/adr/0002-postgres-and-pgvector-as-the-only-store.md),
+  [ADR 0006](docs/adr/0006-in-process-background-runs-without-a-queue.md)
+- **Measured retrieval settings.** Chunks are 500 characters because the embedding model truncates at 128 tokens.
+  `RETRIEVAL_MIN_SCORE=0.35` was taken from measured score distributions. A hybrid BM25 experiment was rejected
+  because it made 5 eval cases worse and only 1 better. [ADR 0004](docs/adr/0004-local-multilingual-embeddings-and-measured-chunk-size.md),
+  [`docs/evaluation.md`](docs/evaluation.md)
+- **Approval as a structural boundary.** The write port (`IssueWriter`) is given only to `ApprovalService`. An AST
+  test fails if any other code references it. [ADR 0005](docs/adr/0005-approval-bound-to-payload-hash-and-writer-isolation.md)
+
+## Tech stack
+
+| Layer | Choice |
+|---|---|
+| Frontend | Next.js 16 (App Router), React 19, TypeScript strict, Tailwind v4, shadcn/ui, Vitest |
+| Backend | Python 3.12, FastAPI, Pydantic v2, SQLAlchemy 2 (async) + Alembic, structlog, pytest, ruff, mypy strict |
+| AI | LangGraph, MCP Python SDK 2.x, OpenAI-compatible client (Groq), `google-genai` (Gemini), fastembed |
+| Data | PostgreSQL 17 + pgvector (Docker Compose) |
+| CI | GitHub Actions: gitleaks history scan, lint, types, unit, integration (real Postgres), evals, frontend build |
+
+## Models, cost and free-tier notes
+
+| Purpose | Default | Notes |
+|---|---|---|
+| Chat | Groq `openai/gpt-oss-120b` | Free tier, key from console.groq.com. Verified working on 2026-10-26. `llama-3.3-70b-versatile`, the originally planned default, returned `model_not_found` for this account. |
+| Chat (optional) | Gemini `gemini-3.8-flash` via `LLM_PROVIDER=gemini` | The Gemini API terms only allow **paid** services when an app is offered to users in the EEA, UK or Switzerland. On the free tier, content may be used to improve Google products. It is therefore not the default. |
+| Embeddings | `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` (384 dims) via fastembed | Runs locally: free, offline and without quotas. It is downloaded once (about 220 MB). |
+| Dev stub | `LLM_PROVIDER=fake` | An explicit echo model for UI work without a key, labelled "Demo stub model" in the UI. |
+
+Not verified: whether Groq's free plan ever requires a payment method (the docs only mention one for upgrading), and
+exact free-tier rate limits for your account (check the provider console). **Provider models, limits and terms change
+over time. Re-check them before relying on any of this.**
 
 ## Run locally
 
+Requirements: Docker, [uv](https://docs.astral.sh/uv/), Node.js 20.
+
 ```bash
-docker compose up -d db
-cp .env.example backend/.env        # set GROQ_API_KEY, or LLM_PROVIDER=fake to run without a key
-cd backend && uv sync && make migrate && make dev     # :8000
-cd frontend && npm install && npm run dev             # :3000
+docker compose up -d db                       # Postgres 17 + pgvector on :5433
+cp .env.example backend/.env                  # then set GROQ_API_KEY (or LLM_PROVIDER=fake)
+cd backend && uv sync && make migrate && make dev     # API on :8000
+cd frontend && npm install && npm run dev             # UI on :3000
 ```
 
-API contract: [`docs/api-contract.md`](docs/api-contract.md).
+Environment variables (names only; see `.env.example` for defaults and comments):
+
+- **Backend:** `DATABASE_URL`, `LLM_PROVIDER`, `LLM_MODEL`, `GROQ_API_KEY`, `GEMINI_API_KEY`, `LLM_TIMEOUT_S`,
+  `LLM_MAX_RETRIES`, `LLM_MAX_OUTPUT_TOKENS`, `CHAT_HISTORY_MESSAGES`, `MAX_UPLOAD_BYTES`, `MAX_PDF_PAGES`,
+  `MAX_DOCUMENT_CHARS`, `CHUNK_MAX_CHARS`, `CHUNK_OVERLAP_CHARS`, `EMBEDDING_PROVIDER`, `EMBEDDING_MODEL`,
+  `EMBEDDING_CACHE_DIR`, `EMBEDDING_BATCH_SIZE`, `RAG_TOP_K`, `RETRIEVAL_MIN_SCORE`, `RAG_CONTEXT_MAX_CHARS`,
+  `REPORT_TIMEOUT_S`, `REPORT_TOP_K`, `REPORT_MAX_EVIDENCE_CHARS`, `REPORT_MAX_CONCURRENT_RUNS`,
+  `MCP_TRACKER_ENABLED`, `MCP_TRACKER_DATA_DIR`, `MCP_TRACKER_ALLOWED_TOOLS`, `MCP_TIMEOUT_S`,
+  `MCP_CONNECT_TIMEOUT_S`, `MCP_MAX_OUTPUT_BYTES`, `PROPOSAL_TTL_S`, `LOG_LEVEL`, `CORS_ORIGINS`
+- **Frontend (server-only):** `BACKEND_URL`
+
+Each provider reads only its own key variable; there is no cross-provider fallback. Keys are only ever read by the
+backend.
+
+## Tests and evaluation
+
+```bash
+cd backend
+make check                          # ruff, mypy strict, unit tests (no Docker, no keys)
+REQUIRE_DB=1 make test-integration  # needs `docker compose up -d db`
+make eval                           # versioned eval suite, writes evals/reports/latest.md
+
+cd frontend
+npm run lint && npm run typecheck && npm test && npm run build
+```
+
+Last local run (2026-10-26): **372 backend unit tests passed** (1 opt-in test skipped), **34 integration tests
+passed**, **190 frontend tests passed**, production build OK. The eval suite has 39 cases covering retrieval,
+citations, abstention, prompt injection, workflow and tool/approval policy: **35 pass, 4 xfail**. The xfails are
+documented retrieval weaknesses, such as a deprecated runbook outranking the current one. Results are reported per
+case; there is no single "accuracy" score. All automated tests use fake or scripted models. Only the screenshots and
+one smoke call used the live provider.
+
+## Security
+
+Full review: [`docs/security.md`](docs/security.md). Highlights:
+
+- Provider keys stay on the backend. The browser talks only to the Next.js server. There are no `NEXT_PUBLIC_*`
+  secrets, and a scan of the client bundle found no keys.
+- Uploaded documents and tool output are treated as untrusted data. Evidence is wrapped in delimiters that document
+  text cannot close. The model has no tools it can call itself.
+- The MCP client uses an exact-name tool allowlist (a decoy `delete_all_issues` tool is never exposed), validates
+  inputs, applies timeouts and caps output size. The subprocess gets a minimal environment.
+- Structured logs carry request and run IDs and redact secrets. Document text, prompts and tool output are not
+  logged.
+- CI runs gitleaks over the full history. Dependency audits: no known Python vulnerabilities. In npm, 2 moderate
+  issues in a build-time-only package.
+
+## Real vs mocked
+
+| Component | Status |
+|---|---|
+| LLM (Groq) | **Real.** Used for the screenshots and a smoke test. Automated tests use fakes. |
+| Embeddings, Postgres/pgvector | **Real**, locally. |
+| MCP server `local-tracker` | **Real MCP over stdio, but a local demo server** shipped in this repo, not an external service. Issues live in a local JSON file. |
+| Gemini adapter | Implemented and covered by mocked tests. Not exercised against the live API. |
+
+## Known limitations
+
+- **No authentication or rate limiting.** It is designed as a single-user local app; do not expose it publicly
+  without putting auth in front.
+- **Proposal content is not fact-checked.** Reports verify their references, but the issue body the model drafts is
+  not checked against evidence. In the screenshot run it included a claim about SEV2 triage that the source document
+  doesn't make. The human review step exists for exactly this reason.
+- **Known retrieval weaknesses** (see the eval xfails): stale document versions can outrank current ones, and exact
+  identifiers like `PAGER-7731` rank lower than ideal.
+- **Background runs live in-process.** Runs interrupted by a restart are marked `interrupted`, not resumed.
+- **The CSP still allows `'unsafe-inline'` scripts** so pages can stay statically prerendered.
+
+## Docs
+
+[`docs/architecture.md`](docs/architecture.md) · [`docs/adr/`](docs/adr/) · [`docs/api-contract.md`](docs/api-contract.md) ·
+[`docs/evaluation.md`](docs/evaluation.md) · [`docs/security.md`](docs/security.md) ·
+[`docs/implementation-status.md`](docs/implementation-status.md)

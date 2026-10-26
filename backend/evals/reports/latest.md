@@ -1,6 +1,6 @@
 # Eval report — agentops-regression v1.0.0
 
-- Generated: 2026-10-26 13:28:37 CET (took 0.9 s)
+- Generated: 2026-10-26 14:11:51 CET (took 1.0 s)
 - Embedding model: `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`; retrieval = exact in-memory cosine over the real chunker + fastembed (same scoring as `PgVectorRetriever`, no HNSW); top_k=6, min_score=0.35
 - Corpus: 5 documents, 20 chunks; model calls are scripted
 - **35 pass, 0 fail, 4 xfail, 0 xpass, 0 skip** (xfail = known weakness, see `known_issue`)

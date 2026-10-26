@@ -24,7 +24,7 @@ HISTORY = [ChatTurn(Role.USER, "Hi"), ChatTurn(Role.ASSISTANT, "Hello!"), ChatTu
 
 
 def _chunk(**fields: Any) -> str:
-    base = {"id": "c1", "object": "chat.completion.chunk", "created": 1, "model": "llama-3.3-70b-versatile"}
+    base = {"id": "c1", "object": "chat.completion.chunk", "created": 1, "model": "openai/gpt-oss-120b"}
     return "data: " + json.dumps(base | fields) + "\n\n"
 
 
@@ -36,7 +36,7 @@ def _model(handler: Callable[[httpx2.Request], httpx2.Response]) -> GroqChatMode
         http_client=httpx2.AsyncClient(transport=httpx2.MockTransport(handler)),
     )
     return GroqChatModel(
-        api_key=KEY, model="llama-3.3-70b-versatile", max_output_tokens=256, timeout_s=5, client=client
+        api_key=KEY, model="openai/gpt-oss-120b", max_output_tokens=256, timeout_s=5, client=client
     )
 
 

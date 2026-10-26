@@ -15,7 +15,7 @@ Providers (`LLM_PROVIDER`, blank `LLM_MODEL` = provider default):
 
 | provider | SDK | key var | default model |
 |---|---|---|---|
-| `groq` (default) | `openai` against `https://api.groq.com/openai/v1` | `GROQ_API_KEY` | `llama-3.3-70b-versatile` |
+| `groq` (default) | `openai` against `https://api.groq.com/openai/v1` | `GROQ_API_KEY` | `openai/gpt-oss-120b` |
 | `gemini` | `google-genai` (`aio.models.generate_content_stream`) | `GEMINI_API_KEY` | `gemini-3.8-flash` |
 | `fake` | built-in stub, explicit only | none | `fake-echo` |
 
@@ -472,3 +472,23 @@ Mocked vs live: every model response in tests, evals, and e2e gates came from fa
 provider has been called yet** (no key configured). Embeddings, Postgres, pgvector, and the MCP subprocess were real in
 the e2e gates. The UI was browser-tested against the dev mock; the real stack was exercised through the proxy (Phase 1)
 and through direct API calls (Phases 2–4).
+
+## Phase 6 — README and genuine screenshots (lead)
+
+- **Live provider verified (2026-10-26):** one smoke call to Groq. `llama-3.3-70b-versatile` returned 404
+  `model_not_found` for this account; it was mapped correctly to a non-retried `LLMRequestRejected`. The available
+  model list was checked and the default changed to `openai/gpt-oss-120b`. The smoke reply arrived with the first
+  token in 0.27 s and usage reported.
+- **Screenshots:** the old mock-backed screenshots were removed. Six new ones were captured with Playwright (Chromium)
+  from the running app: production Next.js build → FastAPI → a clean `agentops_demo` Postgres database, real fastembed
+  embeddings, the real MCP subprocess, and the live `openai/gpt-oss-120b`. Documents are the synthetic eval corpus.
+  Flow exercised in the browser: chat with documents (2 valid citations), retrieval inspector (injection chunk
+  retrieved but not cited), report run (all 5 stages done, 2 references verified), propose follow-up, approve.
+  Issues went 8 → 9; exactly one was created (LT-9).
+- **Observed limitation:** the model-drafted issue body contained a claim not supported by the documents (SEV2
+  triage). Proposal text is not verified against evidence; it is documented in the README as a known limitation.
+- **README:** rewritten with screenshots, flow, three Mermaid diagrams (validated with mermaid-cli), decisions,
+  provider and free-tier notes, env var names, test commands and results, security, real vs mocked, limitations.
+- **Docs:** `docs/architecture.md` + 6 ADRs. Doc/code mismatches the docs agent found were fixed (report
+  `min_score` default, contract scope wording, stale notes).
+- **Deployment:** none. There is no hosted demo, and none was created.
