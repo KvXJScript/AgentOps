@@ -17,6 +17,7 @@ def test_phase2_defaults() -> None:
     assert (settings.embedding_provider, settings.embedding_model) == ("fastembed", DEFAULT_EMBEDDING_MODEL)
     assert (settings.rag_top_k, settings.retrieval_min_score, settings.rag_context_max_chars) == (6, 0.35, 6000)
     assert settings.embedding_cache_dir is None
+    assert (settings.retrieval_identifier_boost, settings.retrieval_deprecated_penalty) == (0.1, 0.1)
 
 
 def test_env_overrides_and_blank_values(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -39,6 +40,8 @@ def test_env_overrides_and_blank_values(monkeypatch: pytest.MonkeyPatch) -> None
         {"chunk_max_chars": 200, "chunk_overlap_chars": 100},
         {"rag_top_k": 21},
         {"retrieval_min_score": 1.5},
+        {"retrieval_identifier_boost": -0.1},
+        {"retrieval_deprecated_penalty": 1.5},
         {"embedding_provider": "openai"},
     ],
 )

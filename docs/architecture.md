@@ -155,7 +155,8 @@ sequenceDiagram
   PS->>DB: report must be succeeded (else 409), return a live pending proposal if one exists
   PS->>IR: search_issues(report title, limit 5)
   IR->>LT: call_tool search_issues (read access)
-  PS->>PS: ask_json DraftIssueOutput, to_draft validation
+  PS->>PS: ask_json DraftIssueReply (report R1 + its reference excerpts S1.. + issues I1..), to_draft validation
+  PS->>PS: check_proposal_grounding: strip invalid [Sn], flag claims, append Sources footer
   PS->>PS: server sets tool, target, summary, payload_hash, expires_at
   PS->>DB: insert pending (partial unique index: one pending per report)
   PS-->>B: 201 ActionProposal (200 if existing)
@@ -179,12 +180,19 @@ The report graph (`application/reports/graph.py`) has no cycles. It runs
 and after `analyze` when `insufficient` is set. Nodes never touch persistence: the `_tracked` wrapper calls the
 `StageTracker` protocol, which `ReportService._RunTracker` implements. There is no LangGraph checkpointer.
 
+Proposal drafting gets the same kind of deterministic check as the report's `verify` node
+([ADR 0008](adr/0008-deterministic-grounding-check-for-proposals.md)). The model sees the report's stored
+reference excerpts under their `S1..` labels and must cite them. `check_proposal_grounding` then strips invalid
+markers and flags each claim that is `unsupported`, `unverified_number` or `low_overlap`. The server appends a
+"Sources" footer, which is part of the hashed arguments. The `grounding` result is stored on the proposal for the
+reviewer and is **not** hashed: it is advisory, and the human still decides.
+
 ## Module responsibilities and dependency direction
 
 | layer | package | owns | may import |
 |---|---|---|---|
 | domain | `agentops/domain/` | dataclasses, enums, `DomainError` codes, `Protocol` ports (`ports.py`, `retrieval.py`, `documents.py`, `reports.py`, `proposals.py`, `tracker.py`), `payload_hash` | stdlib only |
-| application | `agentops/application/` | use cases: `ChatService`, `RagService`, `grounding`, `documents/` (validation, normalize, chunking, pipeline, service), `reports/` (graph, nodes, parsing, prompts, service), `proposals/` (drafting, approval, arguments), `TrackerService` | domain, langgraph, pydantic |
+| application | `agentops/application/` | use cases: `ChatService`, `RagService`, `grounding`, `documents/` (validation, normalize, chunking, pipeline, service), `reports/` (graph, nodes, parsing, prompts, service), `proposals/` (drafting, approval, arguments, grounding), `TrackerService` | domain, langgraph, pydantic |
 | infrastructure | `agentops/infrastructure/` | adapters: `db/` (SQLAlchemy rows, `Sql*Repository`, `PgVectorRetriever`), `llm/` (provider adapters + `resilience.py`), `embeddings/`, `documents/extraction.py`, `mcp/tracker.py`, `logging.py` | domain, SDKs |
 | api | `agentops/api/` | routes, Pydantic schemas, SSE framing, error envelope, request-id middleware | application, domain |
 | composition | `main.py`, `documents_wiring.py`, `tracker_wiring.py`, `config.py` | build adapters from `Settings` and inject them | everything |

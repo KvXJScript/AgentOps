@@ -15,6 +15,7 @@ from datetime import UTC, datetime
 from uuid import UUID
 
 from agentops.application.documents.chunking import ChunkingConfig, chunk_document
+from agentops.application.documents.front_matter import DocumentMetadata, split_front_matter
 from agentops.application.documents.normalize import NormalizedText, normalize_segments
 from agentops.domain.documents import (
     Chunk,
@@ -105,7 +106,9 @@ class IngestionPipeline:
         started = time.monotonic()
         step = "chunk"
         try:
-            drafts = chunk_document(prepared, markdown=document.media_type is MediaType.MARKDOWN, config=self._chunking)
+            markdown = document.media_type is MediaType.MARKDOWN
+            metadata, prepared = split_front_matter(prepared) if markdown else (DocumentMetadata(), prepared)
+            drafts = chunk_document(prepared, markdown=markdown, config=self._chunking)
             if not drafts:
                 raise EmptyDocument()
             step = "embed"
@@ -127,7 +130,11 @@ class IngestionPipeline:
                 for d, vector in zip(drafts, vectors, strict=True)
             ]
             ready = await self._repo.save_chunks(
-                document.id, embedded, embedding_model=self._embedder.model, at=self._clock()
+                document.id,
+                embedded,
+                embedding_model=self._embedder.model,
+                at=self._clock(),
+                deprecated=metadata.deprecated,
             )
         except DocumentNotFound:
             raise  # deleted while being ingested
@@ -141,6 +148,7 @@ class IngestionPipeline:
             extra={
                 **log_ctx,
                 "chunk_count": ready.chunk_count,
+                "deprecated": ready.deprecated,
                 "text_chars": len(prepared.text),
                 "embedding_model": self._embedder.model,
                 "duration_ms": round((time.monotonic() - started) * 1000),

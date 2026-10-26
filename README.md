@@ -132,10 +132,16 @@ sequenceDiagram
   [ADR 0006](docs/adr/0006-in-process-background-runs-without-a-queue.md)
 - **Measured retrieval settings.** Chunks are 500 characters because the embedding model truncates at 128 tokens.
   `RETRIEVAL_MIN_SCORE=0.35` was taken from measured score distributions. A hybrid BM25 experiment was rejected
-  because it made 5 eval cases worse and only 1 better. [ADR 0004](docs/adr/0004-local-multilingual-embeddings-and-measured-chunk-size.md),
-  [`docs/evaluation.md`](docs/evaluation.md)
+  because it made 5 eval cases worse and only 1 better. Two narrower ranking adjustments were adopted instead: an
+  identifier boost that applies only when the query contains a token like `PAGER-7731`, and a penalty for documents
+  marked `status: deprecated` in front matter. They fixed 2 xfails with 0 regressions and leave the reported score
+  unchanged. [ADR 0004](docs/adr/0004-local-multilingual-embeddings-and-measured-chunk-size.md),
+  [ADR 0007](docs/adr/0007-identifier-boost-and-deprecated-penalty.md), [`docs/evaluation.md`](docs/evaluation.md)
 - **Approval as a structural boundary.** The write port (`IssueWriter`) is given only to `ApprovalService`. An AST
   test fails if any other code references it. [ADR 0005](docs/adr/0005-approval-bound-to-payload-hash-and-writer-isolation.md)
+- **Grounding check on drafted proposals.** A live run produced an unsupported claim in a drafted issue. That case is
+  now an eval, and a deterministic check flags unsupported claims and unverified numbers for the reviewer. The check
+  is advisory and outside the payload hash. [ADR 0008](docs/adr/0008-deterministic-grounding-check-for-proposals.md)
 
 ## Tech stack
 
@@ -176,7 +182,8 @@ Environment variables (names only; see `.env.example` for defaults and comments)
 - **Backend:** `DATABASE_URL`, `LLM_PROVIDER`, `LLM_MODEL`, `GROQ_API_KEY`, `GEMINI_API_KEY`, `LLM_TIMEOUT_S`,
   `LLM_MAX_RETRIES`, `LLM_MAX_OUTPUT_TOKENS`, `CHAT_HISTORY_MESSAGES`, `MAX_UPLOAD_BYTES`, `MAX_PDF_PAGES`,
   `MAX_DOCUMENT_CHARS`, `CHUNK_MAX_CHARS`, `CHUNK_OVERLAP_CHARS`, `EMBEDDING_PROVIDER`, `EMBEDDING_MODEL`,
-  `EMBEDDING_CACHE_DIR`, `EMBEDDING_BATCH_SIZE`, `RAG_TOP_K`, `RETRIEVAL_MIN_SCORE`, `RAG_CONTEXT_MAX_CHARS`,
+  `EMBEDDING_CACHE_DIR`, `EMBEDDING_BATCH_SIZE`, `RAG_TOP_K`, `RETRIEVAL_MIN_SCORE`,
+  `RETRIEVAL_IDENTIFIER_BOOST`, `RETRIEVAL_DEPRECATED_PENALTY`, `RAG_CONTEXT_MAX_CHARS`,
   `REPORT_TIMEOUT_S`, `REPORT_TOP_K`, `REPORT_MAX_EVIDENCE_CHARS`, `REPORT_MAX_CONCURRENT_RUNS`,
   `MCP_TRACKER_ENABLED`, `MCP_TRACKER_DATA_DIR`, `MCP_TRACKER_ALLOWED_TOOLS`, `MCP_TIMEOUT_S`,
   `MCP_CONNECT_TIMEOUT_S`, `MCP_MAX_OUTPUT_BYTES`, `PROPOSAL_TTL_S`, `LOG_LEVEL`, `CORS_ORIGINS`
@@ -200,7 +207,7 @@ npm run lint && npm run typecheck && npm test && npm run build
 Last local run (2026-10-26): **372 backend unit tests passed** (1 opt-in test skipped), **34 integration tests
 passed**, **190 frontend tests passed**, production build OK. The eval suite has 39 cases covering retrieval,
 citations, abstention, prompt injection, workflow and tool/approval policy: **35 pass, 4 xfail**. The xfails are
-documented retrieval weaknesses, such as a deprecated runbook outranking the current one. Results are reported per
+documented retrieval weaknesses, such as a paraphrase ranking the right chunk 3rd instead of 2nd. Results are reported per
 case; there is no single "accuracy" score. All automated tests use fake or scripted models. Only the screenshots and
 one smoke call used the live provider.
 
@@ -232,11 +239,17 @@ Full review: [`docs/security.md`](docs/security.md). Highlights:
 
 - **No authentication or rate limiting.** It is designed as a single-user local app; do not expose it publicly
   without putting auth in front.
-- **Proposal content is not fact-checked.** Reports verify their references, but the issue body the model drafts is
-  not checked against evidence. In the screenshot run it included a claim about SEV2 triage that the source document
-  doesn't make. The human review step exists for exactly this reason.
-- **Known retrieval weaknesses** (see the eval xfails): stale document versions can outrank current ones, and exact
-  identifiers like `PAGER-7731` rank lower than ideal.
+- **Proposal grounding is a heuristic, not fact-checking.** A live run drafted "SEV2 follows a timed acknowledgment
+  and triage", which the runbook doesn't say. Drafting now has to cite the report's excerpts as `[Sn]`, and a
+  deterministic check flags every claim without a valid marker, with a number missing from what it cites, or with
+  few words in common with it. The reviewer sees these flags and the approve dialog counts them
+  ([ADR 0008](docs/adr/0008-deterministic-grounding-check-for-proposals.md)). The check still misses a wrong claim
+  that reuses the excerpt's words or a number cited for the wrong entity, and it can flag a fair paraphrase.
+  It only flags. The human decides.
+- **Known retrieval weaknesses** (see the eval xfails): a paraphrase can rank the right chunk 3rd instead of 2nd,
+  and an adjacent off-topic question ("parental leave in Germany", 0.411) clears `RETRIEVAL_MIN_SCORE`, so the
+  model is called and has to decline. Stale versions are demoted only if their front matter says
+  `status: deprecated`. An unmarked old copy can still outrank the current one.
 - **Background runs live in-process.** Runs interrupted by a restart are marked `interrupted`, not resumed.
 - **The CSP still allows `'unsafe-inline'` scripts** so pages can stay statically prerendered.
 

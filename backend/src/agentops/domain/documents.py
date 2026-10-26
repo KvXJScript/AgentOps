@@ -40,6 +40,7 @@ class Document:
     error_code: str | None = None
     chunk_count: int = 0
     embedding_model: str | None = None
+    deprecated: bool = False  # from Markdown front matter `status: deprecated`; demoted at retrieval
 
 
 @dataclass(frozen=True, slots=True)
@@ -176,9 +177,15 @@ class DocumentRepository(Protocol):
         ...
 
     async def save_chunks(
-        self, document_id: UUID, chunks: Sequence[EmbeddedChunk], *, embedding_model: str, at: datetime
+        self,
+        document_id: UUID,
+        chunks: Sequence[EmbeddedChunk],
+        *,
+        embedding_model: str,
+        at: datetime,
+        deprecated: bool = False,
     ) -> Document:
-        """Atomically replace the document's chunks and mark it ready. Raises `DocumentNotFound`."""
+        """Atomically replace the document's chunks, set `deprecated` and mark it ready. Raises `DocumentNotFound`."""
         ...
 
     async def get_chunk(self, document_id: UUID, chunk_id: UUID) -> Chunk | None: ...

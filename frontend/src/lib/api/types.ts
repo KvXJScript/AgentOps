@@ -138,6 +138,8 @@ export interface Document {
   error_code: string | null;
   chunk_count: number;
   embedding_model: string | null;
+  /** From `status: deprecated` front matter; ranked slightly lower in retrieval. */
+  deprecated: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -310,6 +312,25 @@ export interface ProposalArguments {
   labels: ProposalLabel[];
 }
 
+export type GroundingReason = "unsupported" | "unverified_number" | "low_overlap";
+
+export interface GroundingIssue {
+  /** The claim as the model wrote it (markers removed). Model output: render as plain text. */
+  claim: string;
+  reason: GroundingReason;
+  /** Valid [Sn] markers the claim cites (empty for `unsupported`). */
+  markers: string[];
+  /** For `unverified_number`: the quantities not found in the cited excerpts. */
+  numbers: string[];
+}
+
+/** Advisory result of the server's deterministic grounding check. Not part of payload_hash. */
+export interface ProposalGrounding {
+  checked_claims: number;
+  supported: number;
+  issues: GroundingIssue[];
+}
+
 export interface ActionProposal {
   id: string;
   /** Fixed by the server, never chosen by the model. */
@@ -330,4 +351,6 @@ export interface ActionProposal {
   decided_at: string | null;
   result: { issue_id: string } | null;
   error_code: string | null;
+  /** null for proposals drafted before the grounding check existed. */
+  grounding: ProposalGrounding | null;
 }

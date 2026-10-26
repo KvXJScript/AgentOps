@@ -113,7 +113,7 @@ class RagService:
                 "retrieved": len(retrieved),
                 "above_min_score": len(relevant),
                 "included": len(included),
-                "top_score": round(retrieved[0].score, 4) if retrieved else None,
+                "top_score": round(max(c.score for c in retrieved), 4) if retrieved else None,
                 "min_score": config.min_score,
                 "chunk_ids": [str(c.chunk_id) for c in retrieved],
                 "scores": [round(c.score, 4) for c in retrieved],

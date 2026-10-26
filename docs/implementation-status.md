@@ -136,7 +136,8 @@ Known limitations / open points:
 - Uploads without `Content-Length` are spooled by Starlette's multipart parser before the size check; put a body
   size limit in the reverse proxy too. pypdf runs in a thread without a timeout (a pathological PDF can be slow).
 - No OCR, no DOCX/HTML. Tables and multi-column PDFs extract in reading order as pypdf sees it.
-- Pure dense retrieval (no BM25/hybrid, no reranker); exact terms such as codes or IDs can rank poorly.
+- Dense retrieval with no BM25/hybrid and no reranker. Exact identifiers and deprecated documents were handled later
+  (see "Retrieval improvement" below).
   Short chunks plus one-heading context mean answers spanning several sections rely on top_k.
 - The fake echo LLM appends "(see [S1])" when evidence is present, so the grounded UI path is demoable without a key.
 - Contract notes: `POST /documents/{id}/retry` on a non-failed document returns `409 document_not_ready`
@@ -492,3 +493,73 @@ and through direct API calls (Phases 2–4).
 - **Docs:** `docs/architecture.md` + 6 ADRs. Doc/code mismatches the docs agent found were fixed (report
   `min_score` default, contract scope wording, stale notes).
 - **Deployment:** none. There is no hosted demo, and none was created.
+
+## Retrieval improvement (eval-driven)
+
+**Identifier boost and deprecated-document penalty. Done.** [ADR 0007](adr/0007-identifier-boost-and-deprecated-penalty.md),
+measured in [`docs/evaluation.md`](evaluation.md) ("Improvement").
+
+- `domain/ranking.py`: `query_identifiers` (tokens like `PAGER-7731`, `ABC-123`, `ERR_42`; not `v3`/`SEV1`),
+  a whole-token pattern valid for both Python `re` and PostgreSQL `~*`, and `RankingPolicy.rank_score`.
+  The reported `score` stays the cosine similarity, so min-score gating is unchanged.
+- `application/documents/front_matter.py`: optional Markdown front matter. `status: deprecated` sets
+  `documents.deprecated` (migration **0006**, default false). The block is removed before chunking. Other keys are
+  ignored. Exposed as `deprecated` on the Document API.
+- `PgVectorRetriever(ranking=…)`: (1) the unchanged vector top-k, (2) the non-deprecated top-k only if (1) holds a
+  deprecated chunk, (3) the identifier-matching top-k only for identifier queries. All three carry the scope
+  filters, and the candidate set is exact for the adjusted order. Wired from `RETRIEVAL_IDENTIFIER_BOOST=0.1` and
+  `RETRIEVAL_DEPRECATED_PENALTY=0.1` (0 = off).
+- Eval mirror: `evals/index.py` parses front matter with the same function and ranks with the same policy. The
+  report adds a vector / identifier-only / deprecated-only / adopted rank table. The corpus v1 runbook got
+  `status: deprecated` front matter.
+- Results: `ret-identifier-pager` and `ret-confusable-sev1` went xfail → pass. Two more cases improved (rank 2 → 1)
+  and 0 regressed (vector 10/13 → adopted 12/13 within max_rank). Negative scores are unchanged. 3 guard cases
+  were added (suite v1.1.0). `ret-en-core-hours` and `ret-neg-adjacent-parental` stay xfail (paraphrase and
+  threshold problems; see evaluation.md).
+- Tests: unit tests (`test_ranking.py`, `test_front_matter.py`, API `deprecated` field, settings). Integration
+  tests (`test_retrieval_ranking.py`) cover the boost from outside the vector top-k, scope applied before the
+  boost, the absent identifier, the demote-not-drop penalty with unchanged scores, and **parity of the eval index
+  with `PgVectorRetriever` on every retrieval case** against real Postgres.
+- Verified: `make check` (444 passed, 1 skipped), `REQUIRE_DB=1 make test-integration` (40 passed), `make eval`
+  (44 pass, 0 fail, 2 xfail).
+
+## Proposal grounding (found in a live run → measured → fixed)
+
+**Deterministic, advisory grounding check on drafted issue bodies. Done.**
+[ADR 0008](adr/0008-deterministic-grounding-check-for-proposals.md)
+
+- Trigger: a live run (`openai/gpt-oss-120b`) drafted "SEV2 follows a timed acknowledgment and triage". The
+  runbook only says "SEV2 must be acknowledged within one hour". Reports verified their references, but proposal
+  bodies were never checked.
+- Drafting (`proposals/drafting.py`, `prompts.py`): the model also gets the report's stored reference excerpts
+  as untrusted `<evidence>` under their report labels `S1..` (no re-retrieval) and must put `[Sn]` on every
+  factual sentence or bullet. Next steps go under `### Next step`. The model's body is capped at 3000 characters
+  (`DraftIssueReply`), and `[R1]`/`[I1]` markers are still stripped.
+- `proposals/grounding.py` (pure): `check_proposal_grounding(body, evidence)` → cleaned body (invalid markers
+  removed, `[S1, S2]` expanded), cited labels, and `ProposalGrounding{checked_claims, supported, issues}`. The
+  reasons are `unsupported`, `unverified_number` (digits and number words normalised, units compared, identifiers
+  ignored) and `low_overlap` (<50 % of ≥3 content words in the cited excerpts). The claim-splitting rule is in
+  the module docstring. Claims are flagged, never removed.
+- The server appends a `Sources` footer (`- [Sn] title — heading`) inside the hashed arguments. It is always
+  ≤ 4000 characters, and brackets in titles are neutralised. `grounding` is stored in `action_proposals.grounding`
+  (migration **0005**, nullable JSONB). It is not part of `payload_hash`. The API adds `ActionProposal.grounding`
+  (`docs/api-contract.md`).
+- UI: a "Grounding check" panel on the review screen (N/M supported, each flagged claim as plain text with a
+  reason, its markers and the missing numbers; "Not checked" for legacy `null`). The approve dialog says
+  "N claims are not supported by the cited evidence". Approval stays enabled. The dev mock drafts a body with
+  the observed SEV2 claim and a wrong number (`/grounded` and `/legacy` triggers).
+- Tests: `test_proposal_grounding.py` (33: splitting, markers, the observed SEV2 sentence with and without a
+  marker, a document-supplied `[S3]`/forged block, number mismatch and normalisation, truncation). Service
+  tests cover the excerpts in the prompt, grounding stored, the footer, the hash unchanged and approval of the
+  footer body, and footer limits and title smuggling. API and Postgres round trip (including `null`), plus
+  migration 0005 down/up. Frontend: `grounding.test.ts` and panel/dialog render tests.
+- Evals: 4 `proposal_grounding` cases (suite v1.2.0) on real corpus chunks: `pg-observed-sev2-unmarked`,
+  `pg-number-mismatch` ("30 minutes" flagged; "fifteen minutes", "5 business days" and "1 hour" pass),
+  `pg-forged-marker` (vendor-notes `[S9]` stripped and unsupported), and `pg-advisory-not-hashed` (approve executes
+  the footer body; grounding unchanged).
+- Verified: `make check` (444 passed, 1 skipped), `REQUIRE_DB=1 make test-integration` (40 passed), `make eval`
+  (44 pass, 0 fail, 2 xfail; 4/4 grounding cases pass), frontend lint, typecheck, test (198 passed) and build.
+  No live LLM call was made. That run is the lead's next step.
+- Known misses: a wrong claim reusing the excerpt's words ("SEV2 postmortems are reviewed by the CTO [S1]"),
+  a number cited for the wrong entity (SEV1's 15 minutes for SEV2), and facts under `### Next step`. Known false
+  positives: unit or word paraphrases ("60 minutes" vs "1 hour") and numbers past the 300-character excerpt.

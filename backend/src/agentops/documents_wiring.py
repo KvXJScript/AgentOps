@@ -12,6 +12,7 @@ from agentops.application.documents.service import DocumentService
 from agentops.application.rag import RagConfig, RagService
 from agentops.config import Settings
 from agentops.domain.documents import Embedder
+from agentops.domain.ranking import RankingPolicy
 from agentops.infrastructure.db.documents import EMBEDDING_DIMENSIONS, PgVectorRetriever, SqlDocumentRepository
 from agentops.infrastructure.documents.extraction import DefaultTextExtractor
 from agentops.infrastructure.embeddings.factory import build_embedder
@@ -30,7 +31,14 @@ def build_document_components(
 ) -> DocumentComponents:
     embedder = embedder or build_embedder(settings, required_dimensions=EMBEDDING_DIMENSIONS)
     repository = SqlDocumentRepository(sessions)
-    retriever = PgVectorRetriever(sessions, embedder)
+    retriever = PgVectorRetriever(
+        sessions,
+        embedder,
+        ranking=RankingPolicy(
+            identifier_boost=settings.retrieval_identifier_boost,
+            deprecated_penalty=settings.retrieval_deprecated_penalty,
+        ),
+    )
     pipeline = IngestionPipeline(
         repository,
         DefaultTextExtractor(max_pdf_pages=settings.max_pdf_pages),

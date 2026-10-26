@@ -35,6 +35,7 @@ import {
 import type { DecisionKind } from "@/lib/approvals/decide";
 import { cn } from "@/lib/utils";
 import { RelativeTime } from "@/components/ui/relative-time";
+import { GroundingPanel } from "./grounding-panel";
 import { ProposalStatusBadge, TONE_CLASSES } from "./proposal-status";
 
 function when(iso: string | null): string {
@@ -367,6 +368,8 @@ export function ProposalReview({ proposal, now, busy, banner, onApprove, onRejec
       <Outcome proposal={proposal} now={now} />
 
       <ExecutionCard proposal={proposal} />
+
+      <GroundingPanel grounding={proposal.grounding} />
 
       {ui.status === "pending" && (
         <section aria-label="Your decision" className="space-y-3 rounded-xl border bg-card p-4" data-section="decision">

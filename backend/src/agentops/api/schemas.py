@@ -163,6 +163,7 @@ class DocumentOut(BaseModel):
     error_code: str | None
     chunk_count: int
     embedding_model: str | None
+    deprecated: bool
     created_at: Timestamp
     updated_at: Timestamp
 
@@ -179,6 +180,7 @@ class DocumentOut(BaseModel):
             error_code=d.error_code,
             chunk_count=d.chunk_count,
             embedding_model=d.embedding_model,
+            deprecated=d.deprecated,
             created_at=d.created_at,
             updated_at=d.updated_at,
         )

@@ -12,13 +12,14 @@ import logging
 import os
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 from agentops.config import DEFAULT_EMBEDDING_MODEL
 from agentops.infrastructure.embeddings.fastembed import FastEmbedEmbedder
 from evals.checks import MIN_SCORE, RUNNERS, TOP_K, CaseResult, CheckFailed, Env, Skip, rank_of
-from evals.index import CorpusIndex
+from evals.index import CorpusIndex, default_ranking
 from evals.live import run_live
 
 HERE = Path(__file__).parent
@@ -62,16 +63,30 @@ async def _run_case(case: dict[str, Any], env: Env) -> CaseResult:
 
 
 async def hybrid_experiment(cases: list[dict[str, Any]], index: CorpusIndex) -> list[dict[str, Any]]:
+    """Per positive, unscoped retrieval case: rank of the expected chunk under each ranker.
+
+    `vector` is plain cosine (all adjustments off), `identifier`/`deprecated` turn on one adjustment of the
+    default `RankingPolicy`, and `adopted` is the default policy itself (what production and the cases use).
+    """
+    adopted_policy = default_ranking()
+    policies = {
+        "identifier": replace(adopted_policy, deprecated_penalty=0.0),
+        "deprecated": replace(adopted_policy, identifier_boost=0.0),
+        "adopted": adopted_policy,
+    }
     rows = []
     for case in cases:
-        if case["category"] != "retrieval" or case["expect"].get("below_min_score"):
-            continue
         exp = case["expect"]
+        if case["category"] != "retrieval" or "document" not in exp or "scope" in case:
+            continue
         vector, _ = rank_of(await index.vector_ranking(case["query"]), exp)
         bm25_ranking = [(c, s) for c, s in index.bm25_ranking(case["query"]) if s > 0]
         bm25, _ = rank_of(bm25_ranking, exp)
         hybrid, _ = rank_of(await index.hybrid_ranking(case["query"]), exp)
-        rows.append({"id": case["id"], "max_rank": exp["max_rank"], "vector": vector, "bm25": bm25, "hybrid": hybrid})
+        row = {"id": case["id"], "max_rank": exp["max_rank"], "vector": vector, "bm25": bm25, "hybrid": hybrid}
+        for name, policy in policies.items():
+            row[name], _ = rank_of(await index.ranking(case["query"], policy=policy), exp)
+        rows.append(row)
     return rows
 
 
@@ -136,6 +151,26 @@ def write_report(
         "",
         f"Hybrid better on {better}, worse on {worse}, equal on {len(experiment) - better - worse} cases; "
         f"within max_rank: vector {pass_v}/{len(experiment)}, hybrid {pass_h}/{len(experiment)}.",
+        "",
+        "## Ranking adjustments: plain vector vs the adopted `RankingPolicy` (ADR 0007)",
+        "",
+        f"Defaults: {default_ranking()}. `identifier` / `deprecated` = only that adjustment on.",
+        "",
+        "| case | max_rank | vector | identifier | deprecated | adopted | change |",
+        "|---|---|---|---|---|---|---|",
+    ]
+    for row in experiment:
+        v, a = row["vector"], row["adopted"]
+        change = "=" if v == a else ("better" if (a or 99) < (v or 99) else "worse")
+        cells = " | ".join(_rank(row[k]) for k in ("vector", "identifier", "deprecated", "adopted"))
+        lines.append(f"| `{row['id']}` | {row['max_rank']} | {cells} | {change} |")
+    pass_a = sum((r["adopted"] or 99) <= r["max_rank"] for r in experiment)
+    better_a = sum((r["adopted"] or 99) < (r["vector"] or 99) for r in experiment)
+    worse_a = sum((r["adopted"] or 99) > (r["vector"] or 99) for r in experiment)
+    lines += [
+        "",
+        f"Adopted better on {better_a}, worse on {worse_a}, equal on {len(experiment) - better_a - worse_a} cases; "
+        f"within max_rank: vector {pass_v}/{len(experiment)}, adopted {pass_a}/{len(experiment)}.",
         "",
     ]
     REPORT_FILE.parent.mkdir(parents=True, exist_ok=True)

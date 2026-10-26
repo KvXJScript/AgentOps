@@ -10,6 +10,7 @@ from uuid import UUID
 
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     DateTime,
     Float,
@@ -20,7 +21,9 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    case,
     delete,
+    false,
     insert,
     select,
     text,
@@ -41,6 +44,7 @@ from agentops.domain.documents import (
     Embedder,
     MediaType,
 )
+from agentops.domain.ranking import RankingPolicy, contains_identifier, identifier_pattern, query_identifiers
 from agentops.domain.retrieval import ChunkLocation, Citation, RetrievalTrace, RetrievedChunk
 from agentops.infrastructure.db.models import Base
 
@@ -61,6 +65,7 @@ class DocumentRow(Base):
     error_code: Mapped[str | None] = mapped_column(String(64))
     chunk_count: Mapped[int] = mapped_column(Integer, server_default="0")
     embedding_model: Mapped[str | None] = mapped_column(String(128))
+    deprecated: Mapped[bool] = mapped_column(Boolean, server_default=false())  # migration 0006
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
@@ -175,7 +180,13 @@ class SqlDocumentRepository:
                 await session.execute(delete(DocumentChunkRow).where(DocumentChunkRow.document_id == document_id))
 
     async def save_chunks(
-        self, document_id: UUID, chunks: Sequence[EmbeddedChunk], *, embedding_model: str, at: datetime
+        self,
+        document_id: UUID,
+        chunks: Sequence[EmbeddedChunk],
+        *,
+        embedding_model: str,
+        at: datetime,
+        deprecated: bool = False,
     ) -> Document:
         async with self._sessions.begin() as session:
             # Locks the document row, so a concurrent delete or re-run waits for this transaction.
@@ -206,6 +217,7 @@ class SqlDocumentRepository:
             row.error_code = None
             row.chunk_count = len(chunks)
             row.embedding_model = embedding_model
+            row.deprecated = deprecated
             row.updated_at = at
             await session.flush()
             return _document(row)
@@ -229,33 +241,74 @@ class PgVectorRetriever:
 
     Only chunks of `ready` documents embedded with the current model are candidates
     (deleted documents have no chunks left), narrowed to `document_ids` when given.
+
+    `ranking` may reorder candidates (identifier boost, deprecated penalty; see `agentops.domain.ranking`).
+    Every candidate query carries the same scope filters, and `score` stays the cosine similarity. The
+    candidate set is exact for the adjusted order, not a heuristic re-rank of the vector top-k:
+
+    1. the vector top-k (HNSW, as without adjustments);
+    2. only if (1) holds a deprecated chunk: the vector top-k of non-deprecated chunks, which may move up;
+    3. only if the query has identifier-like tokens: the top-k (adjusted order) of chunks containing one.
+
+    A query without identifiers whose top-k holds no deprecated chunk runs (1) alone and returns it unchanged.
     """
 
-    def __init__(self, session_factory: async_sessionmaker[AsyncSession], embedder: Embedder) -> None:
+    def __init__(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        embedder: Embedder,
+        *,
+        ranking: RankingPolicy | None = None,
+    ) -> None:
         self._sessions = session_factory
         self._embedder = embedder
+        self._ranking = ranking or RankingPolicy()
 
     async def search(
         self, query: str, *, top_k: int, document_ids: Sequence[UUID] | None = None
     ) -> list[RetrievedChunk]:
+        policy = self._ranking
         vector = await self._embedder.embed_query(query)
+        identifiers = query_identifiers(query) if policy.identifier_boost > 0 else ()
+        pattern = identifier_pattern(identifiers) if identifiers else None
         distance = DocumentChunkRow.embedding.cosine_distance(vector)
-        stmt = (
-            select(DocumentChunkRow, DocumentRow.title, distance.label("distance"))
+        candidates = (
+            select(DocumentChunkRow, DocumentRow.title, DocumentRow.deprecated, distance.label("distance"))
             .join(DocumentRow, DocumentRow.id == DocumentChunkRow.document_id)
             .where(
                 DocumentRow.status == DocumentStatus.READY.value,
                 DocumentChunkRow.embedding_model == self._embedder.model,
             )
-            .order_by(distance, DocumentChunkRow.id)
             .limit(top_k)
         )
         if document_ids is not None:
-            stmt = stmt.where(DocumentChunkRow.document_id.in_(list(document_ids)))
+            candidates = candidates.where(DocumentChunkRow.document_id.in_(list(document_ids)))
         async with self._sessions.begin() as session:
             # pgvector >= 0.8: keep scanning the HNSW index until enough rows pass the filters.
             await session.execute(_ITERATIVE_SCAN)
-            rows = (await session.execute(stmt)).all()
+            rows = list((await session.execute(candidates.order_by(distance, DocumentChunkRow.id))).all())
+            adjusted = pattern is not None
+            if policy.deprecated_penalty > 0 and any(row.deprecated for row in rows):
+                current = candidates.where(DocumentRow.deprecated.is_(False))
+                rows += (await session.execute(current.order_by(distance, DocumentChunkRow.id))).all()
+                adjusted = True
+            if pattern is not None:
+                penalty = case((DocumentRow.deprecated, policy.deprecated_penalty), else_=0.0)
+                matching = candidates.where(DocumentChunkRow.text.regexp_match(pattern, flags="i"))
+                rows += (await session.execute(matching.order_by(distance + penalty, DocumentChunkRow.id))).all()
+        if adjusted:
+            unique = {row[0].id: row for row in rows}.values()
+            rows = sorted(
+                unique,
+                key=lambda row: (
+                    -policy.rank_score(
+                        1.0 - float(row.distance),
+                        deprecated=row.deprecated,
+                        identifier_match=pattern is not None and contains_identifier(row[0].text, pattern),
+                    ),
+                    row[0].id,
+                ),
+            )[:top_k]
         return [
             RetrievedChunk(
                 chunk_id=chunk.id,
@@ -266,7 +319,7 @@ class PgVectorRetriever:
                 text=chunk.text,
                 location=_location(chunk),
             )
-            for rank, (chunk, title, dist) in enumerate(rows, start=1)
+            for rank, (chunk, title, _, dist) in enumerate(rows, start=1)
         ]
 
 
@@ -285,6 +338,7 @@ def _document(row: DocumentRow) -> Document:
         error_code=row.error_code,
         chunk_count=row.chunk_count,
         embedding_model=row.embedding_model,
+        deprecated=row.deprecated,
         created_at=row.created_at,
         updated_at=row.updated_at,
     )

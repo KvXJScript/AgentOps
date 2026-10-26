@@ -8,7 +8,8 @@ import { ApiError } from "@/lib/api/errors";
 import type { ProposalStatus } from "@/lib/api/types";
 import { decisionOutcome } from "@/lib/approvals/state";
 import { IssueItem } from "@/components/tracker/tool-output";
-import { HASH, INJECTION, issue, NOW, proposal } from "@/test/proposal-fixtures";
+import { grounding, HASH, INJECTION, issue, NOW, proposal } from "@/test/proposal-fixtures";
+import { ConfirmGroundingNote } from "./grounding-panel";
 import { ProposalReview, type ProposalReviewProps } from "./proposal-review";
 
 const noop = () => {};
@@ -157,4 +158,49 @@ describe("ProposalReview", () => {
       expect(html).not.toMatch(/model (has )?approved|approved by (the )?model|auto-?approved/i);
     },
   );
+});
+
+describe("grounding check", () => {
+  it("lists each flagged claim with its reason, markers and missing numbers, as plain text", () => {
+    const g = grounding();
+    g.issues[0] = { ...g.issues[0], claim: "SEV2 <b>follows</b> a timed **triage**." };
+    const html = render({ proposal: proposal({ grounding: g }) });
+    expect(html).toMatch(/<section[^>]*data-section="grounding"[^>]*data-grounding-state="issues"/);
+    expect(html).toContain("1/3 supported");
+    expect(html).toContain("3 claims checked, 1 supported, 2 flagged.");
+    expect(html).toContain('data-grounding-issue="unsupported"');
+    expect(html).toContain('data-grounding-issue="unverified_number"');
+    expect(html).toContain("No source");
+    expect(html).toContain("Number not in source");
+    expect(html).toContain("30 minutes");
+    expect(html).toContain("SEV2 &lt;b&gt;follows&lt;/b&gt; a timed **triage**.");
+    expect(html).not.toContain("<b>follows");
+    // Advisory: approval stays available.
+    expect(buttonTag(html, "approve")).not.toMatch(DISABLED);
+  });
+
+  it("shows a clean result and an unchecked legacy proposal", () => {
+    const clean = render({ proposal: proposal({ grounding: { checked_claims: 2, supported: 2, issues: [] } }) });
+    expect(clean).toContain('data-grounding-state="clean"');
+    expect(clean).toContain("all 2 supported");
+    expect(clean).not.toContain("data-grounding-issue");
+    const legacy = render({ proposal: proposal({ grounding: null }) });
+    expect(legacy).toContain('data-grounding-state="unchecked"');
+    expect(legacy).toContain("Not checked");
+    expect(legacy).not.toContain("data-grounding-counts");
+  });
+
+  it("puts an explicit line in the approve dialog only when claims were flagged", () => {
+    const flagged = renderToStaticMarkup(createElement(ConfirmGroundingNote, { grounding: grounding() }));
+    expect(flagged).toContain("data-confirm-grounding");
+    expect(flagged).toContain("2 claims are not supported by the cited evidence.");
+    expect(flagged).toContain("You can still approve");
+    const one = renderToStaticMarkup(
+      createElement(ConfirmGroundingNote, { grounding: grounding({ issues: grounding().issues.slice(0, 1) }) }),
+    );
+    expect(one).toContain("1 claim is not supported by the cited evidence.");
+    for (const g of [null, { checked_claims: 2, supported: 2, issues: [] }]) {
+      expect(renderToStaticMarkup(createElement(ConfirmGroundingNote, { grounding: g }))).toBe("");
+    }
+  });
 });

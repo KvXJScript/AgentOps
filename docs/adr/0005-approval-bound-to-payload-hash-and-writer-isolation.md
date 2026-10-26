@@ -48,3 +48,6 @@ gaining write access.
   possible from `failed`, and an automatic retry by key is not implemented.
 - Adding a second write tool means adding a policy, a writer port and an extension of the boundary test,
   deliberately.
+- The hash binds what executes, not whether it is true. Drafted bodies get an advisory grounding check whose
+  result is stored next to the proposal but outside the hash
+  ([ADR 0008](0008-deterministic-grounding-check-for-proposals.md)).

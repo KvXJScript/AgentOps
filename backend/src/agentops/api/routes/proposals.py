@@ -54,6 +54,21 @@ class ProposalResultOut(BaseModel):
     issue_id: str
 
 
+class GroundingIssueOut(BaseModel):
+    claim: str
+    reason: Literal["unsupported", "unverified_number", "low_overlap"]
+    markers: list[str]
+    numbers: list[str]
+
+
+class ProposalGroundingOut(BaseModel):
+    """Advisory: what the deterministic check could not tie to the cited excerpts. Not part of the hash."""
+
+    checked_claims: int
+    supported: int
+    issues: list[GroundingIssueOut]
+
+
 class ActionProposalOut(BaseModel):
     id: UUID
     tool: Literal["create_issue"]
@@ -69,6 +84,7 @@ class ActionProposalOut(BaseModel):
     decided_at: Timestamp | None
     result: ProposalResultOut | None
     error_code: str | None
+    grounding: ProposalGroundingOut | None
 
     @classmethod
     def of(cls, p: ActionProposal) -> ActionProposalOut:
@@ -88,8 +104,23 @@ class ActionProposalOut(BaseModel):
                 "decided_at": p.decided_at,
                 "result": {"issue_id": p.result_issue_id} if p.result_issue_id else None,
                 "error_code": p.error_code,
+                "grounding": _grounding(p),
             }
         )
+
+
+def _grounding(p: ActionProposal) -> dict[str, object] | None:
+    g = p.grounding
+    if g is None:
+        return None
+    return {
+        "checked_claims": g.checked_claims,
+        "supported": g.supported,
+        "issues": [
+            {"claim": i.claim, "reason": i.reason.value, "markers": list(i.markers), "numbers": list(i.numbers)}
+            for i in g.issues
+        ],
+    }
 
 
 class ProposalListOut(BaseModel):

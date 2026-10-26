@@ -17,6 +17,11 @@
  *   "/propose-rate"    → POST proposals: 429 llm_rate_limited (retry_after_s 12)
  *   "/exec-fail"       → approve: tool call fails → 200 `failed` + error_code mcp_timeout
  *   "/expire"          → proposal expires after 30 s instead of 15 min
+ *   "/grounded"        → the drafted body has no unsupported claim (grounding panel shows "all supported")
+ *   "/legacy"          → grounding: null (a proposal drafted before the grounding check existed)
+ * Grounding (contract: ActionProposal.grounding): the body keeps the report's [Sn] markers, gets a
+ * "Sources" footer, and by default includes the live-run failure — an unmarked SEV2 claim plus a claim
+ * whose number isn't in its excerpt — so the review screen shows flagged claims.
  * Env: MOCK_TRACKER=down (server unavailable, issues → 502 mcp_unavailable), MOCK_PROPOSAL_TTL_MS,
  *      MOCK_DRAFT_MS (default 900), MOCK_EXEC_MS (default 700),
  *      MOCK_TRACKER_EXTRA_ISSUES=N (adds N filler issues so the 20-item list reports `truncated`).
@@ -156,15 +161,45 @@ function validArgs(a) {
   );
 }
 
-const stripMarkers = (s) => s.replace(/\s*\[S\d+\]/g, "").trim();
+/** A grounding result the way the server computes it, for the mock's fixed body shape. */
+function mockGrounding(claims) {
+  const issues = claims.filter((c) => c.issue).map((c) => ({ claim: c.text, ...c.issue }));
+  return { checked_claims: claims.length, supported: claims.length - issues.length, issues };
+}
 
 function draft(run) {
   const report = run.report;
   const topic = report.title.replace(/^Report:\s*/i, "").trim() || run.question.slice(0, 80);
   let title = `Follow up: ${topic}`.slice(0, 120);
   if (title.length < 5) title = "Follow up on report";
-  const sections = report.sections.map((s) => `## ${s.heading}\n${stripMarkers(s.body)}`).join("\n\n");
-  const body = `Follow-up from report ${run.id}.\n\nQuestion: ${run.question}\n\nSummary: ${stripMarkers(report.summary)}\n\n${sections}`.slice(0, 4000);
+  const refs = report.references ?? [];
+  const valid = new Set(refs.map((r) => r.marker));
+  const keepValid = (s) => s.replace(/\s*\[(S\d+)\]/g, (m, label) => (valid.has(label) ? m : "")).trim();
+  const findings = (report.sections[0]?.body ?? "").split("\n").map(keepValid).filter((l) => l.startsWith("- "));
+  /** @type {{text: string, line: string, issue?: object}[]} */
+  const claims = findings.map((line) => ({ line, text: line.slice(2).replace(/\s*\[S\d+\]/g, "").trim() }));
+  if (!run.question.includes("/grounded")) {
+    claims.push({
+      line: "- SEV2 follows a timed acknowledgment and triage.",
+      text: "SEV2 follows a timed acknowledgment and triage.",
+      issue: { reason: "unsupported", markers: [], numbers: [] },
+    });
+    if (valid.has("S1")) {
+      claims.push({
+        line: "- The first source sets a 30 minutes response target [S1].",
+        text: "The first source sets a 30 minutes response target.",
+        issue: { reason: "unverified_number", markers: ["S1"], numbers: ["30 minutes"] },
+      });
+    }
+  }
+  const cited = refs.filter((r) => claims.some((c) => c.line.includes(`[${r.marker}]`)));
+  const footer = cited.length
+    ? `\n\n---\nSources (cited excerpts from the report's documents):\n${cited
+        .map((r) => `- [${r.marker}] ${r.document_title}${r.location?.heading_path?.length ? ` — ${r.location.heading_path.at(-1)}` : ""}`)
+        .join("\n")}`
+    : "";
+  const body = `## Findings\n${claims.map((c) => c.line).join("\n")}\n\n### Next step\nConfirm the open question with the policy owner.${footer}`.slice(0, 4000);
+  const grounding = run.question.includes("/legacy") ? null : mockGrounding(claims);
   const labels = run.question.toLowerCase().includes("doc") ? ["follow-up", "docs"] : ["follow-up"];
   const related = searchIssues(`${topic} ${run.question}`, 3).items;
   // Always surface the injection fixture so the review screen shows untrusted content handling.
@@ -187,6 +222,7 @@ function draft(run) {
     decided_at: null,
     result: null,
     error_code: null,
+    grounding,
     _flags: { execFail: run.question.includes("/exec-fail") },
   };
   p.payload_hash = payloadHash(p);

@@ -106,6 +106,7 @@ Document = {
   status: "pending" | "processing" | "ready" | "failed",
   error_code: string | null,
   chunk_count: number, embedding_model: string | null,
+  deprecated: boolean,   // Markdown front matter `status: deprecated`; demoted at retrieval (ADR 0007)
   created_at: string, updated_at: string
 }
 ChunkLocation = { char_start: number, char_end: number, page: number | null, heading_path: string[] }
@@ -129,7 +130,7 @@ Chunk = { id: string, document_id: string, ordinal: number, text: string, locati
 ```ts
 RetrievedChunk = {
   chunk_id: string, document_id: string, document_title: string,
-  rank: number, score: number,            // cosine similarity, higher = better
+  rank: number, score: number,            // cosine similarity, higher = better; rank may also reflect the identifier boost / deprecated penalty (ADR 0007), so scores need not decrease with rank
   excerpt: string,                        // ≤ 300 chars
   location: ChunkLocation
 }
@@ -231,7 +232,14 @@ ActionProposal = {
   source: { type: "report", id: string },
   related_issues: Issue[],             // read via search_issues while drafting; untrusted, display only
   created_at: string, expires_at: string /* +15 min */, decided_at: string | null,
-  result: { issue_id: string } | null, error_code: string | null
+  result: { issue_id: string } | null, error_code: string | null,
+  grounding: ProposalGrounding | null  // advisory; null = drafted before the check existed; NOT in payload_hash
+}
+ProposalGrounding = {
+  checked_claims: number, supported: number,  // supported + issues.length == checked_claims
+  issues: { claim: string /* model text, markers removed, ≤ 300 chars */,
+            reason: "unsupported" | "unverified_number" | "low_overlap",
+            markers: string[] /* valid "S1".. the claim cites */, numbers: string[] /* unverified quantities */ }[]
 }
 ```
 
@@ -259,3 +267,9 @@ Clarifications:
   proposal → `410 proposal_expired`; of any other non-pending one → `409 proposal_not_pending`.
 - `?status=expired` includes pending proposals past `expires_at`; `?status=pending` excludes them.
 - `summary` is generated server-side from the validated arguments, never written by the model.
+- Grounding ([ADR 0008](adr/0008-deterministic-grounding-check-for-proposals.md)): the model drafts from the report
+  plus the report's stored reference excerpts (labels `S1..` as in the report) and must cite them as `[Sn]`.
+  The server strips markers that don't resolve, keeps valid ones, and appends a `Sources` footer
+  (`- [Sn] document title — heading`) to `arguments.body`. The footer is part of the hashed arguments. The model's
+  body is limited to 3000 characters, so the body with the footer stays ≤ 4000. `grounding` is a deterministic
+  heuristic: it flags claims and never removes them or blocks approval. The client shows it but never sends it back.

@@ -1,4 +1,4 @@
-import type { ActionProposal, Issue } from "@/lib/api/types";
+import type { ActionProposal, Issue, ProposalGrounding } from "@/lib/api/types";
 
 export const PROPOSAL_ID = "5b0c1e9a-7a8e-4f43-9a51-0d2b6f2b7c11";
 export const HASH = "b74a5d292864f0a1c2e3d4b5a69788f7e6d5c4b3a2918070f1e2d3c4b5a69788";
@@ -23,6 +23,24 @@ export function issue(overrides: Partial<Issue> = {}): Issue {
   };
 }
 
+/** The live-run failure: one supported claim, one the source documents don't make. */
+export function grounding(overrides: Partial<ProposalGrounding> = {}): ProposalGrounding {
+  return {
+    checked_claims: 3,
+    supported: 1,
+    issues: [
+      { claim: "SEV2 follows a timed acknowledgment and triage.", reason: "unsupported", markers: [], numbers: [] },
+      {
+        claim: "SEV2 must be acknowledged within 30 minutes.",
+        reason: "unverified_number",
+        markers: ["S1"],
+        numbers: ["30 minutes"],
+      },
+    ],
+    ...overrides,
+  };
+}
+
 export function proposal(overrides: Partial<ActionProposal> = {}): ActionProposal {
   return {
     id: PROPOSAL_ID,
@@ -39,6 +57,7 @@ export function proposal(overrides: Partial<ActionProposal> = {}): ActionProposa
     decided_at: null,
     result: null,
     error_code: null,
+    grounding: { checked_claims: 1, supported: 1, issues: [] },
     ...overrides,
   };
 }

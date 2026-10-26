@@ -1,10 +1,12 @@
 """An in-memory index over the fixture corpus, built with the production chunker and embedder.
 
 Chunking and embedding go through exactly the code the ingestion pipeline uses (`normalize_segments`,
-`chunk_document`, `embedding_input`, `FastEmbedEmbedder`). Search is an exact brute-force cosine scan, which is
-what `PgVectorRetriever` computes (`1 - cosine_distance`, ties by chunk id) minus HNSW approximation, so the
-suite runs without Docker. A simple BM25 and a reciprocal-rank-fusion ranker sit next to it for the
-hybrid-retrieval experiment only; production retrieval is not touched.
+`split_front_matter`, `chunk_document`, `embedding_input`, `FastEmbedEmbedder`). Search is an exact brute-force
+cosine scan, which is what `PgVectorRetriever` computes (`1 - cosine_distance`, ties by chunk id) minus HNSW
+approximation, so the suite runs without Docker. `ranking` then orders it with the same `RankingPolicy` as
+production (identifier boost, deprecated penalty); `PgVectorRetriever`'s candidate queries are exact for that
+order, so ranking the whole corpus gives the same result. A simple BM25 and a reciprocal-rank-fusion ranker sit
+next to it for the hybrid-retrieval experiment only.
 """
 
 from __future__ import annotations
@@ -19,10 +21,12 @@ from pathlib import Path
 from uuid import UUID
 
 from agentops.application.documents.chunking import ChunkingConfig, chunk_document
+from agentops.application.documents.front_matter import DocumentMetadata, split_front_matter
 from agentops.application.documents.normalize import normalize_segments
 from agentops.application.documents.pipeline import embedding_input
 from agentops.config import Settings
 from agentops.domain.documents import ChunkDraft, Embedder, ExtractedSegment
+from agentops.domain.ranking import RankingPolicy, contains_identifier, identifier_pattern, query_identifiers
 from agentops.domain.retrieval import ChunkLocation, RetrievedChunk
 
 CORPUS_DIR = Path(__file__).parent / "corpus"
@@ -37,6 +41,14 @@ def default_chunking() -> ChunkingConfig:
     )
 
 
+def default_ranking() -> RankingPolicy:
+    fields = Settings.model_fields
+    return RankingPolicy(
+        identifier_boost=float(fields["retrieval_identifier_boost"].default),
+        deprecated_penalty=float(fields["retrieval_deprecated_penalty"].default),
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class IndexedChunk:
     chunk_id: UUID
@@ -47,6 +59,7 @@ class IndexedChunk:
     location: ChunkLocation
     embedding: tuple[float, ...]
     tokens: tuple[str, ...]  # for BM25 (embedding input: heading + text)
+    deprecated: bool = False  # the document's front matter says `status: deprecated`
 
 
 def tokenize(text: str) -> list[str]:
@@ -59,15 +72,17 @@ def _cosine(a: Sequence[float], b: Sequence[float]) -> float:
     return dot / norm if norm else 0.0
 
 
-def chunk_corpus(corpus_dir: Path) -> list[tuple[str, list[ChunkDraft]]]:
-    """Every .md/.txt file, normalised and chunked exactly as ingestion does (Markdown is heading-aware)."""
+def chunk_corpus(corpus_dir: Path) -> list[tuple[str, DocumentMetadata, list[ChunkDraft]]]:
+    """Every .md/.txt file, normalised and chunked exactly as ingestion does (Markdown: front matter, headings)."""
     config = default_chunking()
     out = []
     for path in sorted(corpus_dir.iterdir()):
         if path.suffix not in {".md", ".txt"}:
             continue
+        markdown = path.suffix == ".md"
         normalized = normalize_segments([ExtractedSegment(text=path.read_text(encoding="utf-8"))])
-        out.append((path.name, chunk_document(normalized, markdown=path.suffix == ".md", config=config)))
+        metadata, normalized = split_front_matter(normalized) if markdown else (DocumentMetadata(), normalized)
+        out.append((path.name, metadata, chunk_document(normalized, markdown=markdown, config=config)))
     return out
 
 
@@ -80,10 +95,10 @@ class CorpusIndex:
     @classmethod
     async def build(cls, embedder: Embedder, *, corpus_dir: Path = CORPUS_DIR) -> CorpusIndex:
         drafts_by_doc = chunk_corpus(corpus_dir)
-        inputs = [embedding_input(d) for _, drafts in drafts_by_doc for d in drafts]
+        inputs = [embedding_input(d) for _, _, drafts in drafts_by_doc for d in drafts]
         vectors = iter(await embedder.embed_documents(inputs))
         chunks: list[IndexedChunk] = []
-        for name, drafts in drafts_by_doc:
+        for name, metadata, drafts in drafts_by_doc:
             document_id = uuid.uuid5(_NAMESPACE, name)
             for d in drafts:
                 chunks.append(
@@ -96,6 +111,7 @@ class CorpusIndex:
                         location=d.location,
                         embedding=tuple(next(vectors)),
                         tokens=tuple(tokenize(embedding_input(d))),
+                        deprecated=metadata.deprecated,
                     )
                 )
         return cls(chunks, embedder)
@@ -111,6 +127,21 @@ class CorpusIndex:
         scored = [(c, _cosine(vector, c.embedding)) for c in self._scope(document_ids)]
         scored.sort(key=lambda item: (-item[1], str(item[0].chunk_id)))
         return scored
+
+    async def ranking(
+        self, query: str, document_ids: Sequence[UUID] | None = None, *, policy: RankingPolicy
+    ) -> list[tuple[IndexedChunk, float]]:
+        """What `PgVectorRetriever` returns (before the top-k cut): vector scores, ordered by `policy`."""
+        ranking = await self.vector_ranking(query, document_ids)
+        identifiers = query_identifiers(query) if policy.identifier_boost > 0 else ()
+        pattern = identifier_pattern(identifiers) if identifiers else None
+
+        def key(item: tuple[IndexedChunk, float]) -> tuple[float, str]:
+            chunk, score = item
+            match = pattern is not None and contains_identifier(chunk.text, pattern)
+            return -policy.rank_score(score, deprecated=chunk.deprecated, identifier_match=match), str(chunk.chunk_id)
+
+        return sorted(ranking, key=key)
 
     def bm25_ranking(self, query: str) -> list[tuple[IndexedChunk, float]]:
         scores = self._bm25.scores(tokenize(query))
@@ -153,17 +184,18 @@ def to_retrieved(ranking: Sequence[tuple[IndexedChunk, float]], top_k: int) -> l
 
 
 class IndexRetriever:
-    """The `Retriever` port over the corpus index (vector only, like production)."""
+    """The `Retriever` port over the corpus index, ranked like production (`default_ranking()` unless given)."""
 
-    def __init__(self, index: CorpusIndex) -> None:
+    def __init__(self, index: CorpusIndex, policy: RankingPolicy | None = None) -> None:
         self._index = index
+        self._policy = policy or default_ranking()
         self.calls = 0
 
     async def search(
         self, query: str, *, top_k: int, document_ids: Sequence[UUID] | None = None
     ) -> list[RetrievedChunk]:
         self.calls += 1
-        return to_retrieved(await self._index.vector_ranking(query, document_ids), top_k)
+        return to_retrieved(await self._index.ranking(query, document_ids, policy=self._policy), top_k)
 
 
 class _Bm25:

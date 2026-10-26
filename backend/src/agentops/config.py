@@ -72,6 +72,9 @@ class Settings(BaseSettings):
     embedding_batch_size: int = Field(default=32, ge=1, le=512)
     rag_top_k: int = Field(default=6, ge=1, le=20)
     retrieval_min_score: float = Field(default=0.35, ge=-1.0, le=1.0)
+    # Ranking adjustments (ADR 0007); they reorder results but never change the reported score. 0 disables.
+    retrieval_identifier_boost: float = Field(default=0.1, ge=0.0, le=1.0)
+    retrieval_deprecated_penalty: float = Field(default=0.1, ge=0.0, le=1.0)
     rag_context_max_chars: int = Field(default=6_000, ge=500, le=100_000)
 
     report_timeout_s: float = Field(default=120.0, gt=0, le=900)

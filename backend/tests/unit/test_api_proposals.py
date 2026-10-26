@@ -33,7 +33,7 @@ from tests.tracker_fakes import (
 
 PROPOSAL_KEYS = {
     "id", "tool", "target", "arguments", "summary", "payload_hash", "status", "source", "related_issues",
-    "created_at", "expires_at", "decided_at", "result", "error_code",
+    "created_at", "expires_at", "decided_at", "result", "error_code", "grounding",
 }  # fmt: skip
 
 
@@ -136,6 +136,19 @@ async def test_create_proposal_201_then_200_for_the_existing_pending_one(h: H) -
     assert body["result"] is None
     assert body["decided_at"] is None
     assert [i["id"] for i in body["related_issues"]] == ["LT-1"]
+    # The scripted report has no reference excerpts, so the one factual sentence can't be supported.
+    assert body["grounding"] == {
+        "checked_claims": 1,
+        "supported": 0,
+        "issues": [
+            {
+                "claim": "The report found staff may work remotely two days a week.",
+                "reason": "unsupported",
+                "markers": [],
+                "numbers": [],
+            }
+        ],
+    }
     again = await h.client.post(f"/reports/{h.report_id}/proposals")
     assert again.status_code == 200
     assert again.json()["id"] == body["id"]

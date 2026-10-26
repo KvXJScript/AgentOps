@@ -40,3 +40,10 @@ deterministic in CI.
 - Short chunks mean answers that span sections depend on `RAG_TOP_K`.
 - Changing the model needs a migration (the vector size is fixed) and re-ingestion. Old chunks silently stop
   matching rather than mixing vector spaces.
+
+## Addendum (2026-10-26)
+
+The exact-identifier and deprecated near-duplicate weaknesses are now handled by two narrow ranking adjustments on
+top of the vector score (identifier boost and deprecated-document penalty). The reported score and
+`RETRIEVAL_MIN_SCORE` are unchanged. See [ADR 0007](0007-identifier-boost-and-deprecated-penalty.md). Hybrid
+BM25 stays rejected.

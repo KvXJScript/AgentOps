@@ -6,7 +6,7 @@ import json
 import re
 import uuid
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -17,9 +17,10 @@ from agentops.application.reports.graph import WorkflowServices, build_report_gr
 from agentops.application.reports.nodes import MAX_JSON_ATTEMPTS, RetrievalPolicy
 from agentops.config import Settings
 from agentops.domain.models import Message
+from agentops.domain.ranking import RankingPolicy
 from agentops.domain.reports import InvalidModelOutput
 from evals.fakes import MemoryConversations, ScriptedModel, StageRecorder
-from evals.index import CorpusIndex, IndexRetriever
+from evals.index import CorpusIndex, IndexRetriever, default_ranking
 
 _F = Settings.model_fields
 MIN_SCORE = float(_F["retrieval_min_score"].default)
@@ -62,9 +63,11 @@ class CaseResult:
 class Env:
     index: CorpusIndex
     rag_config: RagConfig = field(default_factory=lambda: RagConfig(TOP_K, MIN_SCORE, CONTEXT_MAX_CHARS))
+    ranking: RankingPolicy = field(default_factory=default_ranking)  # the Settings defaults, as in production
 
     def rag(self) -> RagService:
-        return RagService(IndexRetriever(self.index), embedding_model=self.index.embedder.model, config=self.rag_config)
+        retriever = IndexRetriever(self.index, self.ranking)
+        return RagService(retriever, embedding_model=self.index.embedder.model, config=self.rag_config)
 
 
 # --- retrieval ------------------------------------------------------------------------------------
@@ -83,14 +86,28 @@ def rank_of(ranking: list[tuple[Any, float]], exp: dict[str, Any]) -> tuple[int 
 
 
 async def retrieval(case: dict[str, Any], env: Env) -> CaseResult:
+    """Ranked exactly like `PgVectorRetriever` with the default `RankingPolicy`; `scope` lists document titles."""
     exp = case["expect"]
-    ranking = await env.index.vector_ranking(case["query"])
-    top_score = ranking[0][1]
+    scope = [env.index.document_id(t) for t in case["scope"]] if "scope" in case else None
+    ranking = await env.index.ranking(case["query"], scope, policy=env.ranking)
+    top_score = max(s for _, s in ranking[:TOP_K])  # what min_score gating sees (rank 1 need not be the max)
     metrics: dict[str, Any] = {"top_score": round(top_score, 3), "top": _short(ranking[0][0])}
     if exp.get("below_min_score"):
         metrics["min_score"] = MIN_SCORE
         expect(top_score < MIN_SCORE, f"off-topic top score {top_score:.3f} >= min_score {MIN_SCORE}", metrics)
         return _ok(case, f"top score {top_score:.3f} < {MIN_SCORE}", metrics)
+    top_docs = {c.document_title for c, _ in ranking[:TOP_K]}
+    if scope is not None:
+        expect(top_docs <= set(case["scope"]), f"out-of-scope document in results: {top_docs}", metrics)
+    for doc in exp.get("not_in_top_k", []):
+        expect(doc not in top_docs, f"{doc} in top {TOP_K}", metrics)
+    if "unchanged_without" in exp:
+        baseline_policy = replace(env.ranking, **dict.fromkeys(exp["unchanged_without"], 0.0))
+        baseline = await env.index.ranking(case["query"], scope, policy=baseline_policy)
+        same = [c.chunk_id for c, _ in ranking[:TOP_K]] == [c.chunk_id for c, _ in baseline[:TOP_K]]
+        expect(same, f"top {TOP_K} differs from the ranking without {exp['unchanged_without']}", metrics)
+    if "document" not in exp:
+        return _ok(case, "top_k ranking unchanged" if "unchanged_without" in exp else "scope respected", metrics)
     rank, score = rank_of(ranking, exp)
     metrics.update(rank=rank, score=round(score, 3) if score is not None else None, max_rank=exp["max_rank"])
     expect(rank is not None, "expected chunk not found at all", metrics)
@@ -99,7 +116,6 @@ async def retrieval(case: dict[str, Any], env: Env) -> CaseResult:
     expect(rank <= TOP_K, f"rank {rank} outside top_k={TOP_K}", metrics)
     expect(rank <= exp["max_rank"], f"rank {rank} > max_rank {exp['max_rank']} (top: {metrics['top']})", metrics)
     expect(score >= MIN_SCORE, f"score {score:.3f} below min_score {MIN_SCORE}: would be dropped as evidence", metrics)
-    top_docs = {c.document_title for c, _ in ranking[:TOP_K]}
     for doc in exp.get("also_in_top_k", []):
         expect(doc in top_docs, f"{doc} missing from top {TOP_K}", metrics)
     return _ok(case, f"rank {rank}, score {score:.3f}", metrics)
@@ -501,6 +517,85 @@ async def tool_policy(case: dict[str, Any], env: Env) -> CaseResult:
     raise CheckFailed(f"unknown tool_policy check {check}")
 
 
+# --- Proposal grounding (deterministic check of the drafted issue body) ------------------------------
+def _grounding_refs(case: dict[str, Any], env: Env) -> tuple[Any, ...]:
+    """S1.. = the case's evidence chunks (by document/heading/substring), excerpted like a report stores them."""
+    from agentops.application.reports.nodes import EXCERPT_MAX_CHARS
+    from agentops.domain.retrieval import Citation
+
+    refs = []
+    for n, want in enumerate(case["evidence"], start=1):
+        chunk = next(
+            (
+                c
+                for c in env.index.chunks
+                if c.document_title == want["document"]
+                and (not want.get("heading") or want["heading"] in c.location.heading_path)
+                and want.get("contains", "") in c.text
+            ),
+            None,
+        )
+        expect(chunk is not None, f"evidence chunk {want} not in the corpus (chunking changed?)")
+        assert chunk is not None
+        text = " ".join(chunk.text.split())
+        excerpt = text if len(text) <= EXCERPT_MAX_CHARS else text[: EXCERPT_MAX_CHARS - 1].rstrip() + "…"
+        refs.append(
+            Citation(
+                marker=f"S{n}",
+                chunk_id=chunk.chunk_id,
+                document_id=chunk.document_id,
+                document_title=chunk.document_title,
+                excerpt=excerpt,
+                location=chunk.location,
+            )
+        )
+    return tuple(refs)
+
+
+async def proposal_grounding(case: dict[str, Any], env: Env) -> CaseResult:
+    _require_phase4()
+    from agentops.application.proposals.approval import ApprovalService
+    from agentops.application.proposals.drafting import ProposalService
+    from agentops.domain.proposals import canonical_payload, payload_hash
+    from evals.fakes import MemoryProposals, MemoryReports, SpyWriter, StaticIssues
+
+    exp = case["expect"]
+    run = _succeeded_run()
+    run = replace(run, report=replace(run.report, references=_grounding_refs(case, env)))
+    reply = json.dumps({"title": case.get("title", "Follow up on the report"), "body": case["body"], "labels": []})
+    model, repo = ScriptedModel(reply), MemoryProposals()
+    proposal, _ = await ProposalService(repo, MemoryReports([run]), StaticIssues([]), model).create_from_report(run.id)
+    g = proposal.grounding
+    expect(g is not None, "no grounding stored on the proposal")
+    assert g is not None
+    issues = [[i.claim, i.reason.value] for i in g.issues]
+    metrics: dict[str, Any] = {"claims": g.checked_claims, "supported": g.supported, "issues": len(g.issues)}
+    request = model.calls[0][0][-1].content
+    expect(
+        all(f'<evidence label="{r.marker}"' in request for r in run.report.references), "excerpts not shown", metrics
+    )
+    expect((g.checked_claims, g.supported) == (exp["checked_claims"], exp["supported"]), f"counts {metrics}", metrics)
+    expect(issues == exp["issues"], f"issues {issues}", metrics)
+    for item in exp.get("numbers", []):
+        expect(any(item in i.numbers for i in g.issues), f"{item!r} not reported as unverified", metrics)
+    body = proposal.arguments.body
+    for text in exp.get("body_excludes", []):
+        expect(text not in body, f"{text!r} still in the issue body", metrics)
+    for source in exp.get("sources", []):
+        expect(f"] {source}" in body.split("---\n")[-1], f"source {source!r} missing from the footer", metrics)
+    # Advisory: the hash covers {tool, target, arguments} (the footer included), never the grounding result.
+    expect(proposal.payload_hash == payload_hash(proposal.tool, proposal.target, proposal.arguments), "hash", metrics)
+    expect(b"checked_claims" not in canonical_payload(proposal.tool, proposal.target, proposal.arguments), "hashed")
+    if case.get("check") == "approve":
+        writer = SpyWriter()
+        done = await ApprovalService(repo, writer).approve(proposal.id, proposal.payload_hash)
+        expect(done.status.value == "executed", f"approve ended {done.status.value}", metrics)
+        expect(len(writer.calls) == 1 and writer.calls[0][0].body == body, "executed body differs", metrics)
+        expect(done.grounding == g, "grounding changed by approval", metrics)
+    reasons = ", ".join(sorted({r for _, r in issues})) or "none"
+    return _ok(case, f"{g.supported}/{g.checked_claims} supported; flagged: {reasons}", metrics)
+
+
 def _ok(case: dict[str, Any], reason: str, metrics: dict[str, Any]) -> CaseResult:
     return CaseResult(case["id"], case["category"], "pass", reason, metrics)
 
@@ -512,4 +607,5 @@ RUNNERS: dict[str, Callable[[dict[str, Any], Env], Awaitable[CaseResult]]] = {
     "injection": injection,
     "workflow": workflow,
     "tool_policy": tool_policy,
+    "proposal_grounding": proposal_grounding,
 }

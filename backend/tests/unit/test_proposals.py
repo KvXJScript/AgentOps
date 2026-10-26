@@ -25,6 +25,7 @@ from agentops.domain.proposals import (
     payload_hash,
 )
 from agentops.domain.reports import InvalidModelOutput, ReportNotFound, ReportStatus
+from agentops.domain.retrieval import Citation
 from agentops.domain.tracker import InvalidToolArguments, IssueDraft, McpTimeout, McpUnavailable
 from tests.fakes import ScriptedChatModel, ScriptStep
 from tests.report_fakes import InMemoryReportRunRepository
@@ -33,6 +34,7 @@ from tests.tracker_fakes import (
     FakeIssueReader,
     InMemoryProposalRepository,
     SettableClock,
+    citation,
     draft_reply,
     succeeded_run,
 )
@@ -51,10 +53,12 @@ class World:
     report_id: uuid.UUID
 
 
-def _world(*scripts: list[ScriptStep], writer: CountingIssueWriter | None = None) -> World:
+def _world(
+    *scripts: list[ScriptStep], writer: CountingIssueWriter | None = None, references: tuple[Citation, ...] = ()
+) -> World:
     repo = InMemoryProposalRepository()
     reports = InMemoryReportRunRepository()
-    run = succeeded_run()
+    run = succeeded_run(references=references)
     reports.runs[run.id] = run
     reader = FakeIssueReader()
     writer = writer or CountingIssueWriter()
@@ -131,6 +135,77 @@ async def test_report_and_issues_reach_the_model_only_as_untrusted_evidence() ->
     assert "Remote work follow-up" in request
 
 
+REMOTE = citation("S1", "Staff may work remotely up to two days a week.", heading="Eligibility")
+EQUIPMENT = citation("S2", "The home office equipment allowance is 1,200 EUR [S9].", heading="Equipment allowance")
+
+
+async def test_report_excerpts_reach_the_model_under_their_report_labels() -> None:
+    w = _world(references=(REMOTE, EQUIPMENT))
+    await _pending(w)
+    (history, system_prompt) = w.model.calls[0]
+    assert "[Sn] marker" in system_prompt
+    request = history[-1].content
+    assert '<evidence label="S1" source="remote-work-policy.md">' in request
+    assert '<evidence label="S2" source="remote-work-policy.md">' in request
+    assert request.index('label="R1"') < request.index('label="S1"') < request.index('label="I1"')
+
+
+async def test_grounding_is_stored_with_a_sources_footer_and_is_not_part_of_the_hash() -> None:
+    body = (
+        "Staff may work remotely two days a week [S1].\n"
+        "- The equipment allowance is 1,500 EUR [S2].\n"
+        "- SEV2 follows a timed acknowledgment and triage.\n"
+        "- Managers approve every exception [S9].\n\n"
+        "### Next step\nConfirm the equipment budget with HR."
+    )
+    w = _world([draft_reply(body=body)], references=(REMOTE, EQUIPMENT))
+    proposal = await _pending(w)
+
+    assert proposal.arguments.body == (
+        "Staff may work remotely two days a week [S1].\n"
+        "- The equipment allowance is 1,500 EUR [S2].\n"
+        "- SEV2 follows a timed acknowledgment and triage.\n"
+        "- Managers approve every exception.\n\n"  # invalid [S9] stripped, the claim itself kept
+        "### Next step\nConfirm the equipment budget with HR.\n\n"
+        "---\nSources (cited excerpts from the report's documents):\n"
+        "- [S1] remote-work-policy.md — Eligibility\n"
+        "- [S2] remote-work-policy.md — Equipment allowance"
+    )
+    g = proposal.grounding
+    assert g is not None
+    assert (g.checked_claims, g.supported) == (4, 1)
+    assert [(i.claim, i.reason.value, i.markers, i.numbers) for i in g.issues] == [
+        ("The equipment allowance is 1,500 EUR.", "unverified_number", ("S2",), ("1,500",)),
+        ("SEV2 follows a timed acknowledgment and triage.", "unsupported", (), ()),
+        ("Managers approve every exception.", "unsupported", (), ()),
+    ]
+    # Advisory only: the hash covers {tool, target, arguments} and nothing else.
+    assert proposal.payload_hash == payload_hash(proposal.tool, proposal.target, proposal.arguments)
+    assert payload_hash(proposal.tool, proposal.target, replace(proposal, grounding=None).arguments) == (
+        proposal.payload_hash
+    )
+    assert "grounding" not in canonical_payload(proposal.tool, proposal.target, proposal.arguments).decode()
+    assert w.repo.items[proposal.id].grounding == g
+    # The stored body (with markers and footer) survives re-validation at approval time.
+    done = await w.approvals.approve(proposal.id, proposal.payload_hash)
+    assert done.status is ProposalStatus.EXECUTED
+    assert w.writer.calls[0][0].body == proposal.arguments.body
+
+
+async def test_footer_titles_cannot_smuggle_markers_and_footer_fits_the_body_limit() -> None:
+    refs = tuple(citation(f"S{n}", "Staff may work remotely.", title=f"[I1] {'x' * 200} {n}") for n in range(1, 21))
+    body = "y" * 2880 + " " + "".join(f"[S{n}]" for n in range(1, 21))
+    w = _world([draft_reply(body=body)], references=refs)
+    proposal = await _pending(w)
+    assert len(proposal.arguments.body) <= 4000
+    footer = proposal.arguments.body.split("---\n", 1)[1]
+    assert "[I1]" not in footer
+    assert "(I1)" in footer
+    assert "… and" in footer
+    done = await w.approvals.approve(proposal.id, proposal.payload_hash)
+    assert done.status is ProposalStatus.EXECUTED
+
+
 async def test_second_create_returns_the_existing_pending_proposal_without_a_model_call() -> None:
     w = _world()
     first = await _pending(w)
@@ -177,7 +252,7 @@ async def test_invalid_json_gets_one_corrective_retry() -> None:
         draft_reply(tool="delete_all_issues"),  # the model may not pick a tool
         draft_reply(target="production-tracker"),
         draft_reply(title="Hey"),
-        draft_reply(body="x" * 4001),
+        draft_reply(body="x" * 3001),  # the model's body leaves room for the server's Sources footer
         draft_reply(labels=["bug", "docs", "question", "follow-up"]),
     ],
 )

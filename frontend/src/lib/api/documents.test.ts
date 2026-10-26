@@ -22,6 +22,7 @@ const doc = (over: Partial<Document> = {}): Document => ({
   filename: "handbook.md",
   media_type: "text/markdown",
   size_bytes: 120,
+  deprecated: false,
   checksum_sha256: "abc",
   status: "ready",
   error_code: null,

@@ -1,3 +1,8 @@
+---
+status: deprecated
+superseded_by: incident-runbook.md
+---
+
 # Incident Response Runbook v1 (DEPRECATED 2023)
 
 Synthetic evaluation document for AgentOps. Archived copy kept for audits; superseded by Runbook v3.

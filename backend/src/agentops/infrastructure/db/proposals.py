@@ -19,7 +19,13 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import Mapped, mapped_column
 
-from agentops.domain.proposals import ActionProposal, ProposalStatus
+from agentops.domain.proposals import (
+    ActionProposal,
+    GroundingIssue,
+    GroundingReason,
+    ProposalGrounding,
+    ProposalStatus,
+)
 from agentops.domain.tracker import Issue, IssueDraft
 from agentops.infrastructure.db.models import Base
 
@@ -47,6 +53,8 @@ class ActionProposalRow(Base):
     decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     result_issue_id: Mapped[str | None] = mapped_column(String(32))
     error_code: Mapped[str | None] = mapped_column(String(64))
+    # Advisory grounding-check result; NULL for proposals drafted before the check existed. Not hashed.
+    grounding: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
 
     __table_args__ = (
         CheckConstraint(f"status IN ({_STATUSES})", name="status"),
@@ -202,6 +210,34 @@ def _row(p: ActionProposal) -> ActionProposalRow:
         decided_at=p.decided_at,
         result_issue_id=p.result_issue_id,
         error_code=p.error_code,
+        grounding=_grounding_json(p.grounding) if p.grounding is not None else None,
+    )
+
+
+def _grounding_json(g: ProposalGrounding) -> dict[str, Any]:
+    return {
+        "checked_claims": g.checked_claims,
+        "supported": g.supported,
+        "issues": [
+            {"claim": i.claim, "reason": i.reason.value, "markers": list(i.markers), "numbers": list(i.numbers)}
+            for i in g.issues
+        ],
+    }
+
+
+def _grounding(data: dict[str, Any]) -> ProposalGrounding:
+    return ProposalGrounding(
+        checked_claims=int(data["checked_claims"]),
+        supported=int(data["supported"]),
+        issues=tuple(
+            GroundingIssue(
+                claim=i["claim"],
+                reason=GroundingReason(i["reason"]),
+                markers=tuple(i["markers"]),
+                numbers=tuple(i.get("numbers", ())),
+            )
+            for i in data["issues"]
+        ),
     )
 
 
@@ -249,4 +285,5 @@ def _proposal(row: ActionProposalRow) -> ActionProposal:
         decided_at=row.decided_at,
         result_issue_id=row.result_issue_id,
         error_code=row.error_code,
+        grounding=_grounding(row.grounding) if row.grounding is not None else None,
     )

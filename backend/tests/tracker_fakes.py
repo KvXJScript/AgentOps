@@ -14,6 +14,7 @@ from uuid import UUID
 
 from agentops.domain.proposals import ActionProposal, ProposalStatus
 from agentops.domain.reports import Report, ReportRun, ReportSection, ReportStatus, initial_stages
+from agentops.domain.retrieval import ChunkLocation, Citation
 from agentops.domain.tracker import (
     TOOL_POLICIES,
     Issue,
@@ -49,14 +50,29 @@ def issue(n: int, title: str = "Some issue", body: str = "Body", labels: tuple[s
     return Issue(id=f"LT-{n}", title=title, body=body, labels=labels, status="open", created_at=T0)
 
 
+def citation(marker: str, excerpt: str, *, title: str = "remote-work-policy.md", heading: str = "") -> Citation:
+    return Citation(
+        marker=marker,
+        chunk_id=uuid.uuid4(),
+        document_id=uuid.uuid4(),
+        document_title=title,
+        excerpt=excerpt,
+        location=ChunkLocation(char_start=0, char_end=len(excerpt), heading_path=(heading,) if heading else ()),
+    )
+
+
 def succeeded_run(
-    *, title: str = "Remote work policy", status: ReportStatus = ReportStatus.SUCCEEDED, run_id: UUID | None = None
+    *,
+    title: str = "Remote work policy",
+    status: ReportStatus = ReportStatus.SUCCEEDED,
+    run_id: UUID | None = None,
+    references: tuple[Citation, ...] = (),
 ) -> ReportRun:
     report = Report(
         title=title,
         summary="Staff may work remotely two days a week [S1].",
         sections=(ReportSection(heading="Eligibility", body="All staff after probation [S1]."),),
-        references=(),
+        references=references,
     )
     return ReportRun(
         id=run_id or uuid.uuid4(),

@@ -287,7 +287,7 @@ export async function handlePhase2(req, res, parts, rid) {
     const t = now();
     const title = typeof fields.title === "string" && fields.title.trim() ? fields.title.trim().slice(0, 200) : file.filename.replace(/\.[^.]+$/, "");
     const doc = { id: randomUUID(), title, filename: file.filename, media_type: MEDIA[ext], size_bytes: file.data.length,
-      checksum_sha256: checksum, status: "pending", error_code: null, chunk_count: 0, embedding_model: null, created_at: t, updated_at: t };
+      checksum_sha256: checksum, status: "pending", error_code: null, chunk_count: 0, embedding_model: null, deprecated: false, created_at: t, updated_at: t };
     documents.set(doc.id, doc);
     sources.set(doc.id, file.data);
     await ingest(doc, ext, file.data);

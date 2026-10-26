@@ -28,6 +28,29 @@ class ProposalStatus(StrEnum):
     FAILED = "failed"
 
 
+class GroundingReason(StrEnum):
+    UNSUPPORTED = "unsupported"  # no marker that resolves to evidence the model was shown
+    UNVERIFIED_NUMBER = "unverified_number"  # a number/duration not found in any excerpt it cites
+    LOW_OVERLAP = "low_overlap"  # cites evidence, but shares few content words with it
+
+
+@dataclass(frozen=True, slots=True)
+class GroundingIssue:
+    claim: str  # the claim as written, markers removed
+    reason: GroundingReason
+    markers: tuple[str, ...]  # valid markers the claim cites (empty for `unsupported`)
+    numbers: tuple[str, ...] = ()  # for `unverified_number`: the quantities that were not found
+
+
+@dataclass(frozen=True, slots=True)
+class ProposalGrounding:
+    """Advisory result of the deterministic grounding check. Not part of the payload hash."""
+
+    checked_claims: int
+    supported: int
+    issues: tuple[GroundingIssue, ...]
+
+
 @dataclass(frozen=True, slots=True)
 class ActionProposal:
     id: UUID
@@ -45,6 +68,7 @@ class ActionProposal:
     decided_at: datetime | None = None
     result_issue_id: str | None = None
     error_code: str | None = None
+    grounding: ProposalGrounding | None = None  # None for proposals drafted before the check existed
 
     def as_of(self, now: datetime) -> ActionProposal:
         """A pending proposal past `expires_at` reads back as expired."""

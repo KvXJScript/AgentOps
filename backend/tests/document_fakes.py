@@ -56,7 +56,13 @@ class InMemoryDocumentRepository:
         self.documents[document_id] = replace(document, **changes)  # type: ignore[arg-type]
 
     async def save_chunks(
-        self, document_id: UUID, chunks: Sequence[EmbeddedChunk], *, embedding_model: str, at: datetime
+        self,
+        document_id: UUID,
+        chunks: Sequence[EmbeddedChunk],
+        *,
+        embedding_model: str,
+        at: datetime,
+        deprecated: bool = False,
     ) -> Document:
         document = self.documents.get(document_id)
         if document is None:
@@ -70,6 +76,7 @@ class InMemoryDocumentRepository:
             chunk_count=len(chunks),
             embedding_model=embedding_model,
             updated_at=at,
+            deprecated=deprecated,
         )
         self.documents[document_id] = ready
         return ready

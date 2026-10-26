@@ -36,11 +36,26 @@ async def test_upload_markdown_is_ingested_and_ready() -> None:
             "error_code": None,
             "chunk_count": 2,
             "embedding_model": "fake-hash-bow",
+            "deprecated": False,
             "created_at": body["created_at"],
             "updated_at": body["updated_at"],
         }
         assert (await h.client.get(f"/documents/{body['id']}")).json() == body
         assert [d["id"] for d in (await h.client.get("/documents")).json()["items"]] == [body["id"]]
+
+
+async def test_front_matter_marks_markdown_deprecated_and_is_not_chunked() -> None:
+    async with rag_harness() as h:
+        body = (await _upload(h, "old.md", b"---\nstatus: deprecated\n---\n\n" + HANDBOOK)).json()
+        current = (await _upload(h, "notes.txt", b"---\nstatus: deprecated\n---\nPlain text keeps it.\n")).json()
+
+        assert body["deprecated"] is True
+        assert body["chunk_count"] == 2
+        chunks = [c.chunk for c in h.documents.chunks[uuid.UUID(body["id"])]]
+        assert all("status:" not in c.text for c in chunks)
+        assert chunks[0].text.startswith("# Handbook")
+        assert chunks[0].location.char_start == 0  # offsets refer to the text after the front matter
+        assert current["deprecated"] is False  # front matter is a Markdown convention only
 
 
 async def test_custom_title_and_pdf_upload() -> None:

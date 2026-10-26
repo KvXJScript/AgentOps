@@ -29,6 +29,7 @@ import { RelativeTime } from "@/components/ui/relative-time";
 import { PageIntro } from "@/components/layout/page-intro";
 import { PageShell } from "@/components/layout/page-shell";
 import { ErrorCallout, RequestId } from "@/components/chat/error-callout";
+import { Badge } from "@/components/ui/badge";
 import { DocumentStatusBadge, DocumentTypeIcon } from "./document-status";
 import { useDocuments, type UploadItem, type UploadOutcome } from "@/hooks/use-documents";
 import { ApiError, describeDocumentFailure, describeError } from "@/lib/api/errors";
@@ -244,6 +245,11 @@ function DocumentRow({
             {doc.title}
           </p>
           <DocumentStatusBadge status={doc.status} />
+          {doc.deprecated && (
+            <Badge variant="outline" title="Marked `status: deprecated` in its front matter; ranked lower in retrieval">
+              Deprecated
+            </Badge>
+          )}
         </div>
         <p className="mt-0.5 truncate text-xs text-muted-foreground">
           {titleDiffers && <span className="font-mono">{doc.filename} · </span>}

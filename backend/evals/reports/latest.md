@@ -1,9 +1,9 @@
-# Eval report — agentops-regression v1.0.0
+# Eval report — agentops-regression v1.2.0
 
-- Generated: 2026-10-26 14:11:51 CET (took 1.0 s)
+- Generated: 2026-10-26 15:01:29 CET (took 1.0 s)
 - Embedding model: `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`; retrieval = exact in-memory cosine over the real chunker + fastembed (same scoring as `PgVectorRetriever`, no HNSW); top_k=6, min_score=0.35
 - Corpus: 5 documents, 20 chunks; model calls are scripted
-- **35 pass, 0 fail, 4 xfail, 0 xpass, 0 skip** (xfail = known weakness, see `known_issue`)
+- **44 pass, 0 fail, 2 xfail, 0 xpass, 0 skip** (xfail = known weakness, see `known_issue`)
 
 | status | category | case | key numbers | reason |
 |---|---|---|---|---|
@@ -14,10 +14,10 @@
 | PASS | retrieval | `ret-en2pl-vacation` | rank=1 score=0.616 top_score=0.616 max_rank=2 | rank 1, score 0.616 |
 | PASS | retrieval | `ret-en2pl-sick-leave` | rank=2 score=0.564 top_score=0.582 max_rank=3 | rank 2, score 0.564 |
 | PASS | retrieval | `ret-pl2en-vpn` | rank=1 score=0.592 top_score=0.592 max_rank=1 | rank 1, score 0.592 |
-| PASS | retrieval | `ret-pl2en-postmortem` | rank=2 score=0.525 top_score=0.574 max_rank=3 | rank 2, score 0.525 |
-| XFAIL | retrieval | `ret-confusable-sev1` | rank=2 score=0.756 top_score=0.78 max_rank=1 | rank 2 > max_rank 1 (top: incident-runbook-legacy.md#Response times) — known: the deprecated v1 runbook outranks v3 even when the query says 'current v3'; both reach the model |
-| PASS | retrieval | `ret-confusable-both-present` | rank=2 score=0.7 top_score=0.733 max_rank=3 | rank 2, score 0.700 |
-| XFAIL | retrieval | `ret-identifier-pager` | rank=2 score=0.395 top_score=0.446 max_rank=1 | rank 2 > max_rank 1 (top: urlopy-i-nieobecnosci.md#Zwolnienie lekarskie) — known: exact identifiers are weak for dense retrieval (rank 2 behind an unrelated chunk); BM25/hybrid ranks it 1 |
+| PASS | retrieval | `ret-pl2en-postmortem` | rank=1 score=0.525 top_score=0.574 max_rank=3 | rank 1, score 0.525 |
+| PASS | retrieval | `ret-confusable-sev1` | rank=1 score=0.756 top_score=0.78 max_rank=1 | rank 1, score 0.756 |
+| PASS | retrieval | `ret-confusable-both-present` | rank=1 score=0.7 top_score=0.733 max_rank=3 | rank 1, score 0.700 |
+| PASS | retrieval | `ret-identifier-pager` | rank=1 score=0.395 top_score=0.446 max_rank=1 | rank 1, score 0.395 |
 | PASS | retrieval | `ret-txt-vendor` | rank=1 score=0.814 top_score=0.814 max_rank=1 | rank 1, score 0.814 |
 | PASS | retrieval | `ret-neg-capital` | top_score=0.118 | top score 0.118 < 0.35 |
 | PASS | retrieval | `ret-neg-pl-cheesecake` | top_score=0.159 | top score 0.159 < 0.35 |
@@ -46,6 +46,13 @@
 | PASS | tool_policy | `tool-allowlist-cannot-widen` |  | allowlist can't add unknown tools; create_issue = write + approval |
 | PASS | tool_policy | `tool-drafting-has-no-writer` |  | drafting gets only IssueReader; reader has no create_issue |
 | PASS | tool_policy | `tool-create-needs-approval` |  | 0 calls without valid approval; exactly 1 after approval (repeat is a no-op) |
+| PASS | retrieval | `ret-identifier-absent-unchanged` | top_score=0.449 | top_k ranking unchanged |
+| PASS | retrieval | `ret-no-identifier-unchanged` | rank=1 score=0.677 top_score=0.677 max_rank=2 | rank 1, score 0.677 |
+| PASS | retrieval | `ret-identifier-out-of-scope` | top_score=0.446 | scope respected |
+| PASS | proposal_grounding | `pg-observed-sev2-unmarked` |  | 1/2 supported; flagged: unsupported |
+| PASS | proposal_grounding | `pg-number-mismatch` |  | 3/4 supported; flagged: unverified_number |
+| PASS | proposal_grounding | `pg-forged-marker` |  | 1/2 supported; flagged: unsupported |
+| PASS | proposal_grounding | `pg-advisory-not-hashed` |  | 1/2 supported; flagged: low_overlap |
 
 ## Experiment: vector vs hybrid (vector + BM25, reciprocal-rank fusion k=60)
 
@@ -65,5 +72,28 @@ Rank of the expected chunk (document + heading); `–` = not ranked (BM25: no te
 | `ret-confusable-both-present` | 3 | 2 | 8 | 5 | worse |
 | `ret-identifier-pager` | 1 | 2 | 1 | 1 | better |
 | `ret-txt-vendor` | 1 | 1 | 1 | 1 | = |
+| `ret-no-identifier-unchanged` | 2 | 1 | 2 | 1 | = |
 
-Hybrid better on 1, worse on 5, equal on 6 cases; within max_rank: vector 9/12, hybrid 7/12.
+Hybrid better on 1, worse on 5, equal on 7 cases; within max_rank: vector 10/13, hybrid 8/13.
+
+## Ranking adjustments: plain vector vs the adopted `RankingPolicy` (ADR 0007)
+
+Defaults: RankingPolicy(identifier_boost=0.1, deprecated_penalty=0.1). `identifier` / `deprecated` = only that adjustment on.
+
+| case | max_rank | vector | identifier | deprecated | adopted | change |
+|---|---|---|---|---|---|---|
+| `ret-en-equipment` | 1 | 1 | 1 | 1 | 1 | = |
+| `ret-en-core-hours` | 2 | 3 | 3 | 3 | 3 | = |
+| `ret-pl-vacation-days` | 1 | 1 | 1 | 1 | 1 | = |
+| `ret-pl-wedding-leave` | 1 | 1 | 1 | 1 | 1 | = |
+| `ret-en2pl-vacation` | 2 | 1 | 1 | 1 | 1 | = |
+| `ret-en2pl-sick-leave` | 3 | 2 | 2 | 2 | 2 | = |
+| `ret-pl2en-vpn` | 1 | 1 | 1 | 1 | 1 | = |
+| `ret-pl2en-postmortem` | 3 | 2 | 2 | 1 | 1 | better |
+| `ret-confusable-sev1` | 1 | 2 | 2 | 1 | 1 | better |
+| `ret-confusable-both-present` | 3 | 2 | 2 | 1 | 1 | better |
+| `ret-identifier-pager` | 1 | 2 | 1 | 2 | 1 | better |
+| `ret-txt-vendor` | 1 | 1 | 1 | 1 | 1 | = |
+| `ret-no-identifier-unchanged` | 2 | 1 | 1 | 1 | 1 | = |
+
+Adopted better on 4, worse on 0, equal on 9 cases; within max_rank: vector 10/13, adopted 12/13.

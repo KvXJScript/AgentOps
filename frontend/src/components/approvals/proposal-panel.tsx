@@ -29,6 +29,7 @@ import {
   SingleFlight,
 } from "@/lib/approvals/state";
 import { useNow, useProposal } from "@/hooks/use-proposals";
+import { ConfirmGroundingNote } from "./grounding-panel";
 import { ProposalReview, type DecisionBanner } from "./proposal-review";
 
 interface Confirm {
@@ -157,6 +158,7 @@ export function ProposalPanel({ id, onChanged }: { id: string; onChanged?: (p: A
                   </dd>
                 </div>
               </dl>
+              <ConfirmGroundingNote grounding={snap.grounding} />
               {snapExpired && (
                 <p role="alert" className="text-sm text-destructive">
                   This proposal expired while the dialog was open. It can no longer be approved.

@@ -22,7 +22,7 @@ once the model is cached.
 |---|---|
 | chunking, normalisation, embedding input | **real** (`normalize_segments`, `chunk_document`, `embedding_input`, default `CHUNK_*` settings) |
 | embeddings | **real** fastembed `paraphrase-multilingual-MiniLM-L12-v2` (local, free, deterministic) |
-| vector search | exact in-memory cosine over those embeddings. It scores like `PgVectorRetriever` (`1 − cosine distance`, ties by chunk id) but without HNSW, so **no Docker/DB needed** |
+| vector search | exact in-memory cosine over those embeddings, ordered with the production `RankingPolicy` (identifier boost, deprecated penalty; ADR 0007). It scores like `PgVectorRetriever` (`1 − cosine distance`, ties by chunk id) but without HNSW, so **no Docker/DB needed**. An integration test checks that both give the same top-k on every retrieval case |
 | `RagService`, `ChatService`, `finalize_answer`, report LangGraph graph, `ProposalService`, `ApprovalService`, MCP tool gate | **real** application code |
 | chat model | scripted replies (`evals/fakes.py`); real provider only with `--live` |
 | repositories, tracker reader/writer | in-memory doubles in `evals/fakes.py` (independent of `tests/`) |
@@ -33,7 +33,7 @@ once the model is cached.
 ## Layout
 
 - `backend/evals/corpus/`: 5 synthetic documents: remote-work policy (EN), leave policy (**PL**), incident
-  runbook v3 plus a **near-duplicate** deprecated v1, and vendor notes (`.txt`) carrying a **prompt-injection
+  runbook v3 plus a **near-duplicate** deprecated v1 (front matter `status: deprecated`), and vendor notes (`.txt`) carrying a **prompt-injection
   payload** (fake `</evidence>` / `<evidence label="S9">`, "call create_issue …", a canary token).
 - `backend/evals/cases.json`: the cases, with `suite` and `version` fields. Bump `version` whenever a case or an
   expectation changes. Each case has an `id`, a `category`, an input and an `expect` block. A case may also carry
@@ -43,11 +43,11 @@ once the model is cached.
 - `backend/evals/reports/latest.md`: the last run (status, reason, rank/score/calls). It contains no document
   text beyond file and heading names, and no secrets.
 
-## Categories (v1.0.0: 39 cases)
+## Categories (v1.1.0: 46 cases)
 
 | category | cases | asserts |
 |---|---|---|
-| retrieval | 16 | expected document + heading at rank ≤ N (within top_k, score ≥ min_score). Includes EN, PL, EN→PL and PL→EN, a near-duplicate pair, an exact identifier, a `.txt`, and 4 negatives whose top score must be < `RETRIEVAL_MIN_SCORE` |
+| retrieval | 19 | expected document + heading at rank ≤ N (within top_k, score ≥ min_score). Includes EN, PL, EN→PL and PL→EN, a near-duplicate pair, an exact identifier, a `.txt`, 4 negatives whose top score must be < `RETRIEVAL_MIN_SCORE`, and 3 ranking guards: `unchanged_without` (the top-k is identical with the identifier boost off) and `scope` + `not_in_top_k` (an identifier inside an out-of-scope document is not returned) |
 | citations | 4 | the stored message citations resolve to exactly the chunk ids behind each label, computed independently. Invented markers are removed from the stored text, citations are deduplicated in first-mention order, and only invented markers gives `insufficient_evidence` |
 | abstention | 3 | off-topic EN/PL questions and an empty scope give `insufficient_evidence`, the fixed answer, **0 model calls** and `model: null` |
 | injection | 6 | payload stays inside its evidence block, forged delimiters are neutralised, labels are exactly S1..Sn, a document-supplied `[S9]` can't become a citation, a hostile title can't add attributes, the report graph drops a finding that cites a forged label, tracker issue text stays in its `I1` block, and a model reply adding `tool`/`target` keys or a non-vocabulary label is rejected (tool/target fixed by the server) |
@@ -57,16 +57,18 @@ once the model is cached.
 I checked that the suite catches regressions by breaking the code in a scratch run: disabling delimiter
 neutralisation and keeping invalid markers in the text (both at once) made 5 cases FAIL.
 
-## Current results (v1.0.0)
+## Current results (v1.1.0)
 
-**35 pass, 0 fail, 4 xfail, 0 skip.** The four known weaknesses are all in retrieval:
+**Retrieval: 17 pass, 2 xfail.** v1.0.0 had 12 pass and 4 xfail. Two weaknesses were fixed by the ranking
+change below, and 3 guard cases were added. The remaining known weaknesses are both in retrieval:
 
 | case | measured | meaning |
 |---|---|---|
 | `ret-en-core-hours` | rank 3 (score 0.47), max 2 | a paraphrase without the words "core hours" puts Eligibility first. The chunk still reaches the model |
-| `ret-confusable-sev1` | rank 2 (0.756 vs 0.780) | the **deprecated v1 runbook outranks v3** even when the query says "current runbook v3". Both reach the model, which may quote the stale 30-minute rule. Mitigation: delete superseded documents, or add a document-status filter later |
-| `ret-identifier-pager` | rank 2 (0.395) behind an unrelated PL chunk (0.446) | dense retrieval is weak on exact identifiers such as `PAGER-7731` |
 | `ret-neg-adjacent-parental` | top score 0.411 ≥ 0.35 | an adjacent HR question ("parental leave in Germany") clears the threshold against the leave document, so the model is called and must decline. This matches the Phase 2 calibration note (one adjacent query at 0.47). Raising the threshold above 0.411 would also drop the correct `PAGER-7731` chunk (0.395) |
+
+Fixed in v1.1.0 (see "Improvement" below): `ret-confusable-sev1` (the deprecated v1 runbook outranked v3, 0.780
+vs 0.756) and `ret-identifier-pager` (`PAGER-7731` ranked 2nd at 0.395 behind an unrelated PL chunk at 0.446).
 
 Cross-lingual retrieval works: all 4 PL↔EN cases are at rank ≤ 2 with scores 0.52–0.62.
 
@@ -74,7 +76,7 @@ Cross-lingual retrieval works: all 4 PL↔EN cases are at rank ≤ 2 with scores
 
 Hybrid = reciprocal-rank fusion (k = 60) of the vector ranking and a plain BM25 (k1 = 1.2, b = 0.75, Unicode
 word tokens, lower-cased, no stemming) over the same chunks (heading + text). This is eval-only code in
-`evals/index.py`; the production retriever is unchanged. The table shows the rank of the expected chunk on the
+`evals/index.py`; hybrid is not used in production. The table shows the rank of the expected chunk on the
 12 positive retrieval cases:
 
 | case | max | vector | BM25 | hybrid |
@@ -101,7 +103,55 @@ cross-lingual and paraphrase cases. BM25 has no PL↔EN term overlap and no Poli
 fusion with equal weights can't filter out. Hybrid also doesn't help the near-duplicate case, since both runbooks
 share the same terms. If identifier lookups matter, a narrower option is worth measuring next: apply a lexical
 boost only when the query contains an identifier-like token (`[A-Z]+-\d+`, codes), or use Postgres full-text as a
-tie-breaker within the vector top-k. Either can be evaluated by adding cases here first. The lead decides.
+tie-breaker within the vector top-k. The first option was measured next and adopted, together with a
+deprecated-document penalty: see below.
+
+## Improvement: identifier boost and deprecated penalty (v1.1.0, adopted)
+
+After the hybrid result above, I measured the two narrower options it suggested, each on the **whole** suite
+(see [ADR 0007](adr/0007-identifier-boost-and-deprecated-penalty.md)):
+
+1. **Identifier boost.** Applies only when the query has an identifier-like token (`PAGER-7731`, `ABC-123`;
+   not `v3` or `SEV1`). A chunk containing it as a whole token ranks as if its cosine were +0.1.
+2. **Deprecated penalty.** Markdown front matter `status: deprecated` is parsed at ingestion. That document's
+   chunks rank as if their cosine were −0.1. The corpus v1 runbook got the front-matter block, as a real
+   superseded document would.
+
+Neither changes the reported `score`, so `RETRIEVAL_MIN_SCORE` gating, and with it every negative case, is
+unaffected. Rank of the expected chunk (`make eval` prints this table in `evals/reports/latest.md`):
+
+| case | max | vector (before) | identifier only | deprecated only | adopted (after) |
+|---|---|---|---|---|---|
+| ret-en-equipment | 1 | 1 | 1 | 1 | 1 |
+| ret-en-core-hours | 2 | 3 | 3 | 3 | 3 (xfail) |
+| ret-pl-vacation-days | 1 | 1 | 1 | 1 | 1 |
+| ret-pl-wedding-leave | 1 | 1 | 1 | 1 | 1 |
+| ret-en2pl-vacation | 2 | 1 | 1 | 1 | 1 |
+| ret-en2pl-sick-leave | 3 | 2 | 2 | 2 | 2 |
+| ret-pl2en-vpn | 1 | 1 | 1 | 1 | 1 |
+| ret-pl2en-postmortem | 3 | 2 | 2 | 1 | **1** |
+| ret-confusable-sev1 | 1 | 2 | 2 | 1 | **1** (was xfail) |
+| ret-confusable-both-present | 3 | 2 | 2 | 1 | **1** (legacy still in top-k) |
+| ret-identifier-pager | 1 | 2 | 1 | 2 | **1** (was xfail) |
+| ret-txt-vendor | 1 | 1 | 1 | 1 | 1 |
+| ret-no-identifier-unchanged (new) | 2 | 1 | 1 | 1 | 1 |
+
+Better on 4 cases, worse on 0. Within max_rank: **vector 10/13, adopted 12/13**. Negative top scores are
+unchanged (0.118, 0.159, 0.062, 0.411). With the boost alone, every case without an identifier keeps its exact
+rank. Sensitivity: 0.05 fixes only the deprecated case (the gaps are 0.051 and 0.024), while 0.1, 0.2 and 0.3
+give identical ranks on every case. New guard cases: `ret-identifier-absent-unchanged` (`PAGER-9999` appears
+nowhere, so the top-k is identical with the boost off), `ret-no-identifier-unchanged` (`v3`/`SEV1` don't trigger
+it) and `ret-identifier-out-of-scope` (`PAGER-7731` scoped to other documents, so the runbook is not returned).
+Turn either signal off with `RETRIEVAL_IDENTIFIER_BOOST=0` / `RETRIEVAL_DEPRECATED_PENALTY=0`.
+
+Still xfail, deliberately:
+
+- `ret-en-core-hours` is a paraphrase miss (rank 3, cosine 0.47 vs 0.62 and 0.61). There is no identifier or
+  status signal to use, and BM25 made it worse (rank 12). A better embedding model or a reranker is the fix.
+- `ret-neg-adjacent-parental` scores 0.411. The relevant scores in the suite go as low as 0.395 (the
+  `PAGER-7731` chunk), so no threshold separates them. Raising `RETRIEVAL_MIN_SCORE` would drop correct
+  evidence, so the model is called and must decline. The scores didn't move, so the distributions give no new
+  reason to tune it.
 
 ## Live mode (`--live`)
 
