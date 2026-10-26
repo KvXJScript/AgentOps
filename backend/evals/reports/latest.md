@@ -1,9 +1,9 @@
-# Eval report — agentops-regression v1.2.0
+# Eval report — agentops-regression v1.3.0
 
-- Generated: 2026-10-26 15:01:29 CET (took 1.0 s)
+- Generated: 2026-10-26 15:07:53 CET (took 1.0 s)
 - Embedding model: `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`; retrieval = exact in-memory cosine over the real chunker + fastembed (same scoring as `PgVectorRetriever`, no HNSW); top_k=6, min_score=0.35
 - Corpus: 5 documents, 20 chunks; model calls are scripted
-- **44 pass, 0 fail, 2 xfail, 0 xpass, 0 skip** (xfail = known weakness, see `known_issue`)
+- **45 pass, 0 fail, 2 xfail, 0 xpass, 0 skip** (xfail = known weakness, see `known_issue`)
 
 | status | category | case | key numbers | reason |
 |---|---|---|---|---|
@@ -27,6 +27,7 @@
 | PASS | citations | `cit-mixed-invented` | cited=['S1', 'S2'] evidence=6 | cited ['S1', 'S2']; removed ['S7', 'S99'] |
 | PASS | citations | `cit-only-invented` | evidence=1 | cited none; removed ['S42', 'S0'] |
 | PASS | citations | `cit-dedupe-order` | cited=['S2', 'S1'] evidence=2 | cited ['S2', 'S1']; removed none |
+| PASS | citations | `cit-lenticular-markers` | cited=['S1'] evidence=1 | cited ['S1']; removed ['S9'] |
 | PASS | abstention | `abs-off-topic-en` | top_score=0.118 model_calls=0 | insufficient_evidence, model not called |
 | PASS | abstention | `abs-off-topic-pl` | top_score=0.159 model_calls=0 | insufficient_evidence, model not called |
 | PASS | abstention | `abs-empty-scope` | model_calls=0 | insufficient_evidence, model not called |

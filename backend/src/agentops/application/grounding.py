@@ -14,6 +14,10 @@ from dataclasses import dataclass
 from agentops.domain.retrieval import RetrievedChunk
 
 _MARKER = re.compile(r"\[(S\d{1,3})\]")
+# Marker spellings models actually produce besides `[S1]`: OpenAI-style lenticular
+# brackets (`【S1】`, with optional `†…` locators), fullwidth brackets, inner spaces,
+# and groups like `[S1, S2]`. Observed live from openai/gpt-oss-120b.
+_MARKER_VARIANT = re.compile(r"[\[【［]\s*(S\d{1,3}(?:\s*[,;]\s*S\d{1,3})*)\s*(?:†[^\]】］]*)?[\]】］]")
 # Anything in document text that could open or close our evidence delimiters.
 _DELIMITER = re.compile(r"</?\s*evidence\b[^>]*>", re.IGNORECASE)
 
@@ -34,6 +38,11 @@ class LabelledEvidence:
 class ResolvedCitations:
     cited: list[LabelledEvidence]  # in first-mention order, deduplicated
     invalid_markers: list[str]  # markers the model produced that are not in the mapping
+
+
+def normalize_markers(text: str) -> str:
+    """Rewrite every supported marker spelling to canonical `[S1]` (groups become `[S1][S2]`)."""
+    return _MARKER_VARIANT.sub(lambda m: "".join(f"[{label}]" for label in re.split(r"\s*[,;]\s*", m.group(1))), text)
 
 
 def label_evidence(chunks: Sequence[RetrievedChunk]) -> list[LabelledEvidence]:
@@ -76,7 +85,7 @@ def resolve_citations(answer: str, evidence: Sequence[LabelledEvidence]) -> Reso
     cited: list[LabelledEvidence] = []
     seen: set[str] = set()
     invalid: list[str] = []
-    for label in _MARKER.findall(answer):
+    for label in _MARKER.findall(normalize_markers(answer)):
         if label in seen:
             continue
         seen.add(label)

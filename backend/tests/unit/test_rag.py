@@ -85,3 +85,16 @@ def test_excerpt_and_strip_markers() -> None:
     assert excerpt(long).endswith("…")
     assert excerpt("  short\n\ntext ") == "short text"
     assert strip_markers("A [S1] b [S22].") == "A b."
+
+
+def test_finalize_answer_canonicalises_lenticular_markers() -> None:
+    from agentops.application.grounding import label_evidence
+    from agentops.application.rag import finalize_answer
+
+    evidence = label_evidence([_chunk("Allowance: 1,200 EUR", 0.8, 1)])
+
+    result = finalize_answer("The allowance is 1,200 EUR【S1】.", evidence)
+
+    assert result.grounding is Grounding.GROUNDED
+    assert [c.marker for c in result.citations] == ["S1"]
+    assert result.content == "The allowance is 1,200 EUR[S1]."

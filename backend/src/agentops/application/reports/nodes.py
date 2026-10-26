@@ -15,7 +15,13 @@ from uuid import UUID
 
 from pydantic import BaseModel
 
-from agentops.application.grounding import LabelledEvidence, format_evidence, label_evidence, resolve_citations
+from agentops.application.grounding import (
+    LabelledEvidence,
+    format_evidence,
+    label_evidence,
+    normalize_markers,
+    resolve_citations,
+)
 from agentops.application.reports import prompts
 from agentops.application.reports.parsing import (
     DraftOutput,
@@ -146,7 +152,7 @@ async def verify(state: ReportState, ctx: StageContext) -> ReportState:
 
     def clean(text: str) -> str:
         nonlocal removed
-        cleaned, count = strip_invalid_markers(text, valid)
+        cleaned, count = strip_invalid_markers(normalize_markers(text), valid)
         removed += count
         return cleaned
 

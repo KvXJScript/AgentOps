@@ -65,3 +65,22 @@ def test_context_budget_drops_trailing_evidence_but_keeps_the_first() -> None:
     assert 'label="S1"' in rendered
     assert 'label="S2"' not in rendered
     assert resolve_citations("[S1] [S2]", included).invalid_markers == ["S2"]
+
+
+def test_marker_variants_are_normalised_to_canonical_form() -> None:
+    from agentops.application.grounding import normalize_markers
+
+    assert normalize_markers("Allowance is 1,200 EUR【S1】.") == "Allowance is 1,200 EUR[S1]."
+    assert normalize_markers("See ［S2］ and 【S3†L4-L9】") == "See [S2] and [S3]"
+    assert normalize_markers("Both [S1, S2] and [ S3 ]") == "Both [S1][S2] and [S3]"
+    assert normalize_markers("Not a marker: [Sx] or [S] or (S1)") == "Not a marker: [Sx] or [S] or (S1)"
+
+
+def test_lenticular_markers_resolve_like_ascii_ones() -> None:
+    # Observed live: openai/gpt-oss-120b answered "…1,200 EUR【S1】." and the citation was lost.
+    evidence = label_evidence([chunk("a"), chunk("b")])
+
+    resolved = resolve_citations("Allowance is 1,200 EUR【S1】, see also【S9】.", evidence)
+
+    assert [c.label for c in resolved.cited] == ["S1"]
+    assert resolved.invalid_markers == ["S9"]

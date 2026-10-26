@@ -1,6 +1,6 @@
 {
   "suite": "agentops-regression",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "notes": "Bump `version` whenever a case is added, removed or its expectations change. Retrieval cases run against the real chunker + fastembed model; everything model-related is scripted unless `--live`.",
   "cases": [
     {"id": "ret-en-equipment", "category": "retrieval", "query": "How much is the home office equipment allowance?",
@@ -50,6 +50,10 @@
     {"id": "cit-dedupe-order", "category": "citations", "query": "Ile dni wolnego dostaję z okazji ślubu?",
      "answer": "Dwa dni [S2]. Zob. też [S1] i ponownie [S2].",
      "expect": {"cited": ["S2", "S1"], "removed": [], "grounding": "grounded"}},
+    {"id": "cit-lenticular-markers", "category": "citations", "query": "How much is the home office equipment allowance?",
+     "note": "Regression from the live eval: openai/gpt-oss-120b wrote 【S1】 instead of [S1] and the citation was lost.",
+     "answer": "The allowance is 1,200 EUR【S1】, see also【S9】.",
+     "expect": {"cited": ["S1"], "removed": ["S9"], "grounding": "grounded"}},
 
     {"id": "abs-off-topic-en", "category": "abstention", "query": "What is the capital of Australia?",
      "expect": {"grounding": "insufficient_evidence", "model_calls": 0}},

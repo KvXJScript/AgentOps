@@ -40,6 +40,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 
+from agentops.application.grounding import normalize_markers
 from agentops.domain.proposals import GroundingIssue, GroundingReason, ProposalGrounding
 from agentops.domain.retrieval import Citation
 
@@ -134,7 +135,7 @@ class GroundingResult:
 
 def check_proposal_grounding(body: str, evidence: Sequence[Citation]) -> GroundingResult:
     by_label = {item.marker: item for item in evidence}
-    cleaned, invalid = _strip_invalid(_expand_groups(body), set(by_label))
+    cleaned, invalid = _strip_invalid(_expand_groups(normalize_markers(body)), set(by_label))
     issues: list[GroundingIssue] = []
     claims = split_claims(cleaned)
     for claim in claims:

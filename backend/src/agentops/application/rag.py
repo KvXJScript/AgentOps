@@ -19,6 +19,7 @@ from agentops.application.grounding import (
     LabelledEvidence,
     format_evidence,
     label_evidence,
+    normalize_markers,
     resolve_citations,
 )
 from agentops.domain.models import Grounding
@@ -136,6 +137,7 @@ def grounded_system_prompt(base_prompt: str, context: EvidenceContext) -> str:
 
 def finalize_answer(answer: str, evidence: Sequence[LabelledEvidence]) -> GroundedAnswer:
     """Resolve markers against this request's evidence only; drop the rest from the text."""
+    answer = normalize_markers(answer)
     resolved = resolve_citations(answer, evidence)
     invalid = set(resolved.invalid_markers)
     content = _ANY_MARKER.sub(lambda m: "" if m.group(1) in invalid else m.group(0), answer) if invalid else answer
