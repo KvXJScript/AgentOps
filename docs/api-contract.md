@@ -33,7 +33,7 @@ Messages are safe for end users: never include secrets, stack traces, or raw pro
 
 - `GET /api/v1/health` → `200 {"status":"ok"}` (liveness, no dependencies)
 - `GET /api/v1/ready` → `200` or `503`
-  `{"status":"ready"|"not_ready","checks":{"database":"ok"|"error","llm":"configured"|"not_configured"},"llm":{"provider":"gemini","model":"…"}}`
+  `{"status":"ready"|"not_ready","checks":{"database":"ok"|"error","llm":"configured"|"not_configured"},"llm":{"provider":"groq","model":"…"}}`
   (`llm` object omitted when not configured; never contains credentials)
 
 ## Conversations
@@ -136,7 +136,7 @@ RetrievedChunk = {
 ```
 
 - `POST /api/v1/retrieval/search` body `{"query": string (1..1000), "top_k"?: 1..20, "document_ids"?: string[]}` → `{"items": RetrievedChunk[], "embedding_model": string}`
-  Scope rule (applied in SQL before anything reaches the model): only `ready`, non-deleted documents, intersected with `document_ids` when given.
+  Scope rule (applied in SQL before anything reaches the model): only `ready`, non-deleted documents embedded with the current `EMBEDDING_MODEL`, intersected with `document_ids` when given (an empty list means no documents; omit the field for all).
 
 ## Chat with documents
 

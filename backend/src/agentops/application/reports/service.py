@@ -66,7 +66,7 @@ def _utcnow() -> datetime:
 class ReportSettings:
     timeout_s: float = 120.0
     top_k: int = 8
-    min_score: float = 0.3
+    min_score: float = 0.35
     max_evidence_chars: int = 12_000
     max_concurrent_runs: int = 2
     max_graph_steps: int = MAX_GRAPH_STEPS

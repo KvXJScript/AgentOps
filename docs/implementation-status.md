@@ -144,7 +144,7 @@ Known limitations / open points:
   with `status: failed` per the upload rule, so `embedding_failed`'s HTTP 500 in the table is only reachable via
   SSE (question embedding failed) — there it is an `error` event and the assistant message is `failed`. With
   `use_documents`, a reply streams one `token` event carrying the fixed insufficient-evidence text before `done`.
-  Missing retriever → `503 retrieval_not_configured` (code introduced by Phase 3, not yet in the contract table).
+  Missing retriever → `503 retrieval_not_configured` (now in the contract table).
 
 ## Frontend
 
@@ -266,8 +266,8 @@ scripted-model stub run through the real app/DB/retriever (succeeded, 2 invented
 a real LLM provider.
 
 Open points / proposals:
-- Contract: add `retrieval_not_configured` (503) to the error table.
-- `LLM_MAX_OUTPUT_TOKENS` default 1024 may truncate a draft JSON with a real model (→ retry → `invalid_model_output`);
+- Contract: add `retrieval_not_configured` (503) to the error table. *(Done.)*
+- *(Resolved: default raised to 2048.)* `LLM_MAX_OUTPUT_TOKENS` default 1024 may truncate a draft JSON with a real model (→ retry → `invalid_model_output`);
   2048 is a safer default for reports, or a per-call max-tokens on the port.
 - `POST /reports` dedupes `document_ids` before storing; `document_ids` of unknown/non-ready documents are not
   rejected (they just yield no evidence).
