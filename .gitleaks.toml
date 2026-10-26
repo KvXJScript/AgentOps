@@ -9,3 +9,8 @@ paths = [
   '''^backend/tests/unit/test_logging\.py$''',
   '''^backend/tests/unit/test_config\.py$''',
 ]
+
+[[allowlists]]
+description = "Idempotency keys are opaque request ids, not credentials"
+regexTarget = "line"
+regexes = ['''idempotency_key''']

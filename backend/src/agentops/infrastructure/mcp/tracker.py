@@ -66,7 +66,10 @@ class McpTrackerConfig:
     args: tuple[str, ...]
     data_dir: Path
     allowlist: frozenset[str]
-    timeout_s: float = 10.0
+    timeout_s: float = 10.0  # per tool call
+    # Spawning the server and the MCP handshake; kept separate so a tight per-call
+    # timeout doesn't also make a slow cold start look like an outage.
+    connect_timeout_s: float = 20.0
     max_output_bytes: int = 256_000
     reconnect_interval_s: float = 5.0
 
@@ -299,7 +302,7 @@ class McpTrackerConnection:
         stop = asyncio.Event()
         task = asyncio.create_task(self._own(ready, stop), name="mcp-local-tracker")
         try:
-            async with asyncio.timeout(self._config.timeout_s):
+            async with asyncio.timeout(self._config.connect_timeout_s):
                 client = await asyncio.shield(ready)
         except BaseException as exc:
             stop.set()

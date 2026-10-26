@@ -85,6 +85,7 @@ class Settings(BaseSettings):
     # Exact tool names; may only narrow TRACKER_TOOLS. Comma-separated in the environment.
     mcp_tracker_allowed_tools: Annotated[list[str], NoDecode] = Field(default_factory=lambda: list(TRACKER_TOOLS))
     mcp_timeout_s: float = Field(default=10.0, gt=0, le=120)
+    mcp_connect_timeout_s: float = Field(default=20.0, gt=0, le=120)
     mcp_max_output_bytes: int = Field(default=256_000, ge=1_024, le=10_000_000)
     proposal_ttl_s: int = Field(default=900, ge=60, le=86_400)
 

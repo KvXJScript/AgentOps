@@ -49,6 +49,7 @@ def tracker_config(settings: Settings) -> McpTrackerConfig:
         data_dir=Path(settings.mcp_tracker_data_dir).expanduser().resolve(),
         allowlist=frozenset(settings.mcp_tracker_allowed_tools),
         timeout_s=settings.mcp_timeout_s,
+        connect_timeout_s=settings.mcp_connect_timeout_s,
         max_output_bytes=settings.mcp_max_output_bytes,
     )
 

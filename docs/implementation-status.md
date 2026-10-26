@@ -455,3 +455,20 @@ Open points:
 - `'unsafe-inline'` for scripts remains (Next inline bootstrap + next-themes). A nonce CSP needs dynamic rendering via
   `proxy.ts`; experimental SRI is the static alternative. HSTS / `upgrade-insecure-requests` belong to the deployment.
 - Not re-verified against the real backend.
+
+## Phase 5 — Verification summary (lead)
+
+Run by the lead on 2026-10-26 against the committed tree:
+
+| Check | Result |
+|---|---|
+| Backend `make check` (ruff, mypy strict on src + tests, unit tests) | 372 passed, 1 skipped (opt-in real-embedding test) |
+| Backend `REQUIRE_DB=1 make test-integration` (Postgres + pgvector) | 34 passed |
+| `make eval` (real local embeddings, scripted model) | 35 pass, 0 fail, 4 xfail (known retrieval weaknesses), 0 skip — see `docs/evaluation.md` |
+| Frontend lint, typecheck, vitest, production build | clean, 190 passed, build ok |
+| Secret scan, dependency audit, CORS/CSRF/bind checks | see `docs/security.md` |
+
+Mocked vs live: every model response in tests, evals, and e2e gates came from fake or scripted models. **No real LLM
+provider has been called yet** (no key configured). Embeddings, Postgres, pgvector, and the MCP subprocess were real in
+the e2e gates. The UI was browser-tested against the dev mock; the real stack was exercised through the proxy (Phase 1)
+and through direct API calls (Phases 2–4).
